@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_logix._tcp</string>
+		<string>_http._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>LoGiX finds and controls your LED fixtures on your local network.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>The camera scans a fixture's pairing QR code.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+</dict>
+</plist>
