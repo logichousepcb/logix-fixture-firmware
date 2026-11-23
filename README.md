@@ -208,7 +208,23 @@ are kept.
 - **PlatformIO over WiFi:** `pio run -e ota -t upload --upload-port 192.168.1.50` (or `name.local`).
 - **curl:** `curl -F "firmware=@.pio/build/usb/firmware.bin" http://192.168.1.50/api/update`
 
-To release a new version, bump `FW_VERSION` in `src/config.h`.
+### Update notice
+
+When the web page loads, your **browser** asks GitHub for the latest release of
+[logichousepcb/logix-fixture-firmware](https://github.com/logichousepcb/logix-fixture-firmware/releases).
+If it is newer than the installed version, an orange **Update x.y.z** badge appears next to the
+WiFi/IP pill. Clicking it opens the Firmware tab, which links the right file for this module (`-4mb.bin`
+or `-1mb.bin`, picked from the flash size). Download it, then upload it. The device itself never goes
+to the internet. The check needs the browser to have internet access, so it stays quiet on the setup
+hotspot. The result is cached in the browser for 6 hours.
+
+### Releasing a new version
+
+1. Bump `FW_VERSION` in `src/config.h` (semantic versioning: the badge compares `major.minor.patch`).
+2. `pio run -e usb -e usb1m`
+3. Publish a GitHub release tagged `vX.Y.Z` with both builds attached as
+   `logix-fixture-X.Y.Z-4mb.bin` (`.pio/build/usb/firmware.bin`) and
+   `logix-fixture-X.Y.Z-1mb.bin` (`.pio/build/usb1m/firmware.bin`).
 
 ---
 

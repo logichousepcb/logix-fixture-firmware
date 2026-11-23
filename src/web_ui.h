@@ -15,6 +15,8 @@ h1{font-size:20px;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:no
 h2{font-size:15px;margin:0 0 8px}
 .pill{flex:none;font-size:12px;padding:3px 10px;border-radius:99px;background:var(--line);color:var(--mu)}
 .pill.ok{background:#173b27;color:var(--ok)}.pill.warn{background:#3d2e12;color:var(--warn)}
+.pills{flex:none;display:flex;gap:6px;align-items:center}
+a.pill.upd{background:#3d2e12;color:var(--warn);text-decoration:none;font-weight:600}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
 .row{display:flex;align-items:center;gap:12px;margin:12px 0}
 .row>label{flex:0 0 96px;color:var(--mu);font-size:13px}
@@ -49,7 +51,7 @@ dt{color:var(--mu)}dd{margin:0;word-break:break-all}
 a{color:var(--ac)}
 code{background:#10131a;padding:1px 5px;border-radius:5px;font-size:12.5px}
 </style></head><body><main>
-<header><h1 id="title">LoGiX Fixture</h1><span id="pill" class="pill">…</span></header>
+<header><h1 id="title">LoGiX Fixture</h1><span class="pills"><a id="upd" class="pill upd" href="#" hidden></a><span id="pill" class="pill">…</span></span></header>
 <div id="banner" class="banner" hidden>Setup mode: choose your Wi&#8209;Fi network below to put this fixture on your network.</div>
 
 <section class="card" id="ctl">
@@ -104,11 +106,12 @@ code{background:#10131a;padding:1px 5px;border-radius:5px;font-size:12.5px}
 
   <div class="tab" id="t-fw">
     <div class="hint">Installed: <b id="fwver"></b> <span id="fwbuild"></span></div>
+    <div class="hint" id="fwlatest" hidden></div>
     <div class="row"><input id="fwfile" type="file" accept=".bin,.gz"></div>
     <div class="actions"><button id="fwup">Upload &amp; install</button></div>
     <progress id="fwprog" value="0" max="100" hidden></progress>
     <div class="msg" id="fwmsg"></div>
-    <div class="hint">Use <code>.pio/build/usb/firmware.bin</code> from a PlatformIO build. Settings are kept.</div>
+    <div class="hint">Use a <code>-4mb.bin</code> release file (<code>-1mb.bin</code> for 1&nbsp;MB modules) or <code>.pio/build/usb/firmware.bin</code> from a PlatformIO build. Settings are kept.</div>
   </div>
 
   <div class="tab" id="t-info">
@@ -194,6 +197,26 @@ const fmtUp=s=>{const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.fl
 async function refresh(){try{I=await api('/api/info');renderHeader();if($('t-info').classList.contains('act'))renderInfo()}catch(e){$('pill').textContent='offline';$('pill').className='pill'}
   try{if(!timer){S=await api('/api/state');paint()}}catch(e){}}
 
+// ---- update check: the browser asks GitHub for the latest release (needs internet, so it stays
+// quiet on the setup hotspot). Cached for 6 h to stay well inside GitHub's rate limit.
+const REPO='logichousepcb/logix-fixture-firmware';let REL=null;
+const vnum=v=>String(v).replace(/^v/,'').split('.').map(n=>parseInt(n,10)||0);
+const newer=(a,b)=>{a=vnum(a);b=vnum(b);for(let i=0;i<3;i++){const x=a[i]||0,y=b[i]||0;if(x!==y)return x>y}return false};
+async function checkUpdate(){let r=null;
+  try{const c=JSON.parse(localStorage.getItem('logixRel')||'null');if(c&&Date.now()-c.t<6*3600e3)r=c.r}catch(e){}
+  if(!r){try{const x=await fetch(`https://api.github.com/repos/${REPO}/releases/latest`,{headers:{Accept:'application/vnd.github+json'}});
+      if(!x.ok)return;const j=await x.json();
+      r={tag:j.tag_name,url:j.html_url,assets:(j.assets||[]).map(a=>({name:a.name,url:a.browser_download_url}))};
+      try{localStorage.setItem('logixRel',JSON.stringify({t:Date.now(),r}))}catch(e){}}catch(e){return}}
+  REL=r;showUpdate()}
+function showUpdate(){if(!REL||!I||!I.version)return;const v=REL.tag.replace(/^v/,''),up=newer(v,I.version),u=$('upd'),f=$('fwlatest');
+  u.hidden=!up;u.textContent='Update '+v;u.title=`Firmware ${v} is available (installed ${I.version})`;
+  const big=!I.system||I.system.flashSize>1048576,a=REL.assets.find(x=>x.name.endsWith(big?'-4mb.bin':'-1mb.bin'));
+  f.innerHTML=up?`Update available: <b>${esc(v)}</b>. <a href="${esc(a?a.url:REL.url)}">Download ${esc(a?a.name:'from GitHub')}</a>, then upload it below. <a href="${esc(REL.url)}" target="_blank" rel="noopener">Release notes</a>`
+    :`Up to date (latest release ${esc(v)}).`;
+  f.hidden=false}
+$('upd').onclick=e=>{e.preventDefault();tab('fw')};
+
 // ---- wifi
 $('scan').onclick=async()=>{const b=$('scan');b.disabled=true;b.textContent='Scanning…';
   try{for(let i=0;i<20;i++){const r=await api('/api/wifi/scan');if(!r.scanning){
@@ -262,5 +285,6 @@ $('reset').onclick=async()=>{if(!confirm('Erase all settings (Wi‑Fi, name, GPI
   showTok(C.apiToken||'');
   tab(I.wifi&&I.wifi.apActive&&!I.wifi.connected?'wifi':'dev');
   setInterval(()=>{if(!document.hidden)refresh()},4000);
+  checkUpdate();
 })();
 </script></body></html>)HTML";
