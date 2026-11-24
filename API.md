@@ -128,6 +128,7 @@ Full response:
   "api": 1,
   "auth": false,
   "wsPort": 81,
+  "fixture": "snowflake91",
   "hostname": "molly-s-tree",
   "build": "Nov 22 2026 10:15:02",
   "mac": "48:E7:29:71:F3:14",
@@ -195,7 +196,7 @@ client only. With a bad token, the server sends an `error` and closes the connec
 ```json
 { "name": "LoGiX Fixture 3A4F", "hostname": "logix-fixture-3a4f",
   "ssid": "HomeNet", "hasPass": true, "hasApPass": false,
-  "ledPin": 2, "ledCount": 30, "colorOrder": "GRB", "irPin": 4, "maxMa": 500,
+  "ledPin": 2, "ledCount": 30, "colorOrder": "GRB", "irPin": 4, "maxMa": 500, "fixture": "custom",
   "setupSsid": "LoGiX-Setup-F314", "apiToken": "" }
 ```
 
@@ -212,6 +213,7 @@ Send any subset of fields. All of them are validated before anything is saved.
 | `colorOrder` | `RGB` `RBG` `GRB` `GBR` `BRG` `BGR` | immediately |
 | `irPin` | -1 (off), 0–5, 12–14 | reboot |
 | `maxMa` | 0 (no limit) or 100–20000 | immediately |
+| `fixture` | `custom`, `string` (String Lights), `snowflake91` (91 Pixel Snowflake; forces `ledCount` 91). Icon at `/icon/<fixture>.webp` | immediately (reboot if the LED count changes) |
 | `apiToken` | `"generate"` (random 24-hex), a 16–64 char `[A-Za-z0-9_-]` string, or `""` (off) | immediately; reboots when turning auth on/off (mDNS `auth` flag) |
 
 Response: `{"ok":true}`, or `{"ok":true,"reboot":true}` when the device is about to restart (about 1.5 s).

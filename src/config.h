@@ -2,7 +2,7 @@
 #include <Arduino.h>
 
 #define FW_NAME "LoGiX Fixture"
-#define FW_VERSION "1.5.0"
+#define FW_VERSION "1.6.0"
 #define FW_MODEL "logixfixture"  // board identifier for apps (mDNS TXT "model"), LoGiX naming scheme
 #define FW_MANUFACTURER "Logix"
 #define API_VERSION 1            // bump on breaking API changes (mDNS TXT "api")
@@ -23,6 +23,7 @@ struct Config {
   int8_t irPin = 4;          // IR receiver GPIO (board: TSOP38238 on GPIO4); -1 = disabled
   uint16_t maxMa = 500;      // total USB current budget in mA; 0 = no limit
   String apiToken;           // empty = API open; otherwise required on every API call
+  String fixture = "custom"; // fixture model: custom, string, snowflake91 (UI icon + LED-count preset)
 };
 
 // Light state (/state.json, saved a few seconds after the last change).
@@ -58,3 +59,4 @@ String hostnameFromName(const String &name);
 bool validLedPin(int pin);
 bool validIrPin(int pin);
 bool validColorOrder(const String &o);
+bool validFixture(const String &f);

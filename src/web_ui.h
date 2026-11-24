@@ -50,8 +50,11 @@ dt{color:var(--mu)}dd{margin:0;word-break:break-all}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
 a{color:var(--ac)}
 code{background:#10131a;padding:1px 5px;border-radius:5px;font-size:12.5px}
+.ttl{display:flex;align-items:center;gap:10px;min-width:0}
+#hicon{flex:none;height:34px;max-width:96px;object-fit:contain}
+#micon{display:block;max-height:110px;max-width:100%;margin:4px auto 2px}
 </style></head><body><main>
-<header><h1 id="title">LoGiX Fixture</h1><span class="pills"><a id="upd" class="pill upd" href="#" hidden></a><span id="pill" class="pill">…</span></span></header>
+<header><span class="ttl"><img id="hicon" alt="" hidden><h1 id="title">LoGiX Fixture</h1></span><span class="pills"><a id="upd" class="pill upd" href="#" hidden></a><span id="pill" class="pill">…</span></span></header>
 <div id="banner" class="banner" hidden>Setup mode: choose your Wi&#8209;Fi network below to put this fixture on your network.</div>
 
 <section class="card" id="ctl">
@@ -94,6 +97,9 @@ code{background:#10131a;padding:1px 5px;border-radius:5px;font-size:12.5px}
   </div>
 
   <div class="tab" id="t-hw">
+    <div class="row"><label>Model</label><select id="model"></select></div>
+    <img id="micon" alt="" hidden>
+    <div class="hint" id="mhint" hidden></div>
     <div class="row"><label>LED data GPIO</label><select id="ledpin"></select></div>
     <div class="row"><label>LED count</label><input id="ledcount" type="number" min="1" max="800"></div>
     <div class="row"><label>Color order</label><select id="order"><option>GRB</option><option>RGB</option><option>BRG</option><option>RBG</option><option>GBR</option><option>BGR</option></select></div>
@@ -127,6 +133,10 @@ const $=id=>document.getElementById(id);
 let S={},I={},C={},pending={},timer=null,lastSend=0;
 const SW=['#ff0000','#ff6a00','#ffc400','#00ff40','#00d0ff','#0040ff','#a000ff','#ff00a0','#ffffff','#ff9329'];
 const LEDP=[[2,'GPIO2 – LED headers (board default)'],[4,'GPIO4 – IR receiver on this board'],[5,'GPIO5'],[12,'GPIO12'],[13,'GPIO13'],[14,'GPIO14'],[0,'GPIO0 – must be HIGH at boot'],[15,'GPIO15 – must be LOW at boot'],[3,'GPIO3/RX – disables serial'],[1,'GPIO1/TX – disables serial']];
+// Fixture models: id, label, preset LED count (0 = keep whatever is set), icon.
+const MODELS=[['custom','Custom / other',0,''],['string','String Lights',0,'/icon/string.webp'],['snowflake91','91 Pixel Snowflake',91,'/icon/snowflake91.webp']];
+const model=id=>MODELS.find(m=>m[0]===id)||MODELS[0];
+function showIcon(el,id){const m=model(id);el.hidden=!m[3];if(m[3])el.src=m[3];else el.removeAttribute('src')}
 const IRP=[[-1,'Disabled'],[4,'GPIO4 – TSOP38238 (board default)'],[5,'GPIO5'],[12,'GPIO12'],[13,'GPIO13'],[14,'GPIO14'],[0,'GPIO0'],[2,'GPIO2'],[3,'GPIO3/RX – disables serial'],[1,'GPIO1/TX – disables serial']];
 
 let TOK='';try{TOK=localStorage.getItem('logixToken')||''}catch(e){}
@@ -174,7 +184,7 @@ $('tabs').onclick=e=>{if(e.target.dataset.t)tab(e.target.dataset.t)};
 
 // ---- info / header
 function renderHeader(){
-  $('title').textContent=I.name;document.title=I.name;
+  $('title').textContent=I.name;document.title=I.name;showIcon($('hicon'),I.fixture);
   const w=I.wifi,p=$('pill');
   if(w.connected){p.textContent=w.ssid+' · '+w.ip;p.className='pill ok'}
   else if(w.apActive){p.textContent='Setup hotspot';p.className='pill warn'}
@@ -254,8 +264,12 @@ $('dsave').onclick=async()=>{const body={name:$('name').value.trim()};if($('appa
     else msg('dmsg','Saved.','ok')}catch(e){msg('dmsg',e.message,'bad')}};
 
 // ---- hardware
-opts($('ledpin'),LEDP);opts($('irpin'),IRP);
-$('hsave').onclick=async()=>{const body={ledPin:+$('ledpin').value,ledCount:+$('ledcount').value,colorOrder:$('order').value,irPin:+$('irpin').value,maxMa:+$('maxma').value};
+opts($('ledpin'),LEDP);opts($('irpin'),IRP);opts($('model'),MODELS.map(m=>[m[0],m[1]]));
+function modelUI(){const m=model($('model').value);showIcon($('micon'),m[0]);
+  $('ledcount').readOnly=!!m[2];if(m[2])$('ledcount').value=m[2];
+  $('mhint').hidden=!m[2];$('mhint').textContent=m[2]?`${m[1]}: LED count is fixed at ${m[2]}.`:''}
+$('model').onchange=modelUI;
+$('hsave').onclick=async()=>{const body={fixture:$('model').value,ledPin:+$('ledpin').value,ledCount:+$('ledcount').value,colorOrder:$('order').value,irPin:+$('irpin').value,maxMa:+$('maxma').value};
   try{const r=await post('/api/config',body);msg('hmsg',r.reboot?'Saved. Rebooting…':'Saved.','ok');if(r.reboot)setTimeout(()=>location.reload(),8000)}catch(e){msg('hmsg',e.message,'bad')}};
 
 // ---- firmware
@@ -280,6 +294,7 @@ $('reset').onclick=async()=>{if(!confirm('Erase all settings (Wi‑Fi, name, GPI
   try{const fx=await api('/api/effects');$('fx').innerHTML=fx.map(e=>`<option value="${e.id}">${e.name}</option>`).join('')}catch(e){}
   try{C=await api('/api/config');$('name').value=C.name;$('name').oninput();$('ssid').value=C.ssid;
     $('ledpin').value=C.ledPin;$('ledcount').value=C.ledCount;$('order').value=C.colorOrder;$('irpin').value=C.irPin;$('maxma').value=C.maxMa;
+    $('model').value=C.fixture||'custom';modelUI();
     if(C.hasApPass)$('appass').placeholder='(unchanged)';}catch(e){}
   await refresh();
   showTok(C.apiToken||'');

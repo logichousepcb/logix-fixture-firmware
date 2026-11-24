@@ -84,6 +84,8 @@ bool validColorOrder(const String &o) {
   return o == "RGB" || o == "RBG" || o == "GRB" || o == "GBR" || o == "BRG" || o == "BGR";
 }
 
+bool validFixture(const String &f) { return f == "custom" || f == "string" || f == "snowflake91"; }
+
 static void loadConfig() {
   cfg = Config();
   cfg.name = defaultName();
@@ -107,6 +109,8 @@ static void loadConfig() {
   if (d["irPin"].is<int>() && validIrPin(d["irPin"])) cfg.irPin = d["irPin"];
   if (d["maxMa"].is<int>()) cfg.maxMa = d["maxMa"];
   if (d["apiToken"].is<const char *>()) cfg.apiToken = d["apiToken"].as<const char *>();
+  if (d["fixture"].is<const char *>() && validFixture(d["fixture"].as<String>()))
+    cfg.fixture = d["fixture"].as<const char *>();
   if (cfg.irPin == cfg.ledPin) cfg.irPin = -1;
 }
 
@@ -122,6 +126,7 @@ bool configSave() {
   d["irPin"] = cfg.irPin;
   d["maxMa"] = cfg.maxMa;
   d["apiToken"] = cfg.apiToken;
+  d["fixture"] = cfg.fixture;
   File f = LittleFS.open(CFG_PATH, "w");
   if (!f) return false;
   serializeJson(d, f);

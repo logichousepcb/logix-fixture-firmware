@@ -6,6 +6,7 @@
 #include <WebSocketsServer.h>
 
 #include "config.h"
+#include "icons.h"
 #include "ir.h"
 #include "leds.h"
 #include "net.h"
@@ -217,6 +218,18 @@ static void handleRoot() {
   server.send_P(200, "text/html", WEB_UI);
 }
 
+// Fixture model icons, baked into the firmware (see icons.h). Public and cached: they hold no data.
+static void handleIcon() {
+  String u = server.uri();
+  const uint8_t *p = nullptr;
+  size_t n = 0;
+  if (u == "/icon/string.webp") p = ICON_STRING, n = sizeof(ICON_STRING);
+  else if (u == "/icon/snowflake91.webp") p = ICON_SNOWFLAKE, n = sizeof(ICON_SNOWFLAKE);
+  if (!p) return server.send(404, "text/plain", "not found");
+  server.sendHeader("Cache-Control", "max-age=604800");
+  server.send_P(200, "image/webp", (PGM_P)p, n);
+}
+
 static void handleInfo() {
   JsonDocument d;
   // Identity block: always public, so an app can show the device and know to ask for a token.
@@ -229,6 +242,7 @@ static void handleInfo() {
   d["api"] = API_VERSION;
   d["auth"] = cfg.apiToken.length() > 0;
   d["wsPort"] = WS_PORT;
+  d["fixture"] = cfg.fixture;  // fixture model, so apps can pick an icon
   if (!authed()) return sendJson(200, d);
 
   d["hostname"] = deviceHostname();
@@ -333,6 +347,7 @@ static void handleConfigGet() {
   d["colorOrder"] = cfg.colorOrder;
   d["irPin"] = cfg.irPin;
   d["maxMa"] = cfg.maxMa;
+  d["fixture"] = cfg.fixture;
   d["setupSsid"] = setupApSsid();
   d["apiToken"] = cfg.apiToken;  // caller is already authenticated (or auth is off)
   sendJson(200, d);
@@ -379,6 +394,12 @@ static void handleConfigPost() {
       return sendErr(400, "maxMa must be 0 (no limit) or 100-20000");
     c.maxMa = v;
   }
+  if (!d["fixture"].isNull()) {
+    String f = d["fixture"].as<String>();
+    if (!validFixture(f)) return sendErr(400, "fixture must be custom, string or snowflake91");
+    c.fixture = f;
+  }
+  if (c.fixture == "snowflake91") c.ledCount = 91;  // fixed pixel count for this model
   if (c.irPin >= 0 && c.irPin == c.ledPin) return sendErr(400, "LED and IR can't share a GPIO");
   if (!d["apiToken"].isNull()) {
     String t = d["apiToken"].as<String>();
@@ -610,6 +631,8 @@ void webBegin() {
 
   server.on("/", HTTP_GET, handleRoot);
 
+  server.on("/icon/string.webp", HTTP_GET, handleIcon);
+  server.on("/icon/snowflake91.webp", HTTP_GET, handleIcon);
   server.on("/api/info", HTTP_GET, handleInfo);  // public identity block; full details need auth
   server.on("/api/state", HTTP_GET, guarded<sendState>);
   server.on("/api/state", HTTP_POST, guarded<handleStatePost>);
