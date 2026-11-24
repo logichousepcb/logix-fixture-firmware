@@ -37,7 +37,7 @@ const char *const EFFECT_NAMES[] = {"Solid",         "Breathe",       "Rainbow",
                                     "Color Wipe",    "Theater Chase", "Twinkle", "Comet",
                                     "Candle",        "Christmas",     "Buffalo Bills", "Buffalo Sabres",
                                     "Lake Shore",    "Buffalo Bills Solid", "Buffalo Sabres Solid",
-                                    "Lake Shore Solid"};
+                                    "Lake Shore Solid", "Frost"};
 
 // Team / theme colors, shown as pairs of LEDs (2 of each color) repeating along the strip.
 static const uint8_t BILLS[][3] = {{0, 51, 141}, {198, 12, 48}, {255, 255, 255}};  // blue, red, white
@@ -52,6 +52,16 @@ static const uint8_t XMAS[][3] = {
     {255, 70, 0},   // orange
     {255, 170, 0},  // warm yellow
 };
+// Frost: icy theme (deep ice blue, light blue, silver, white), blended smoothly along the strip.
+static const uint8_t FROST[][3] = {
+    {10, 70, 200},    // deep ice blue
+    {90, 180, 255},   // light blue
+    {160, 180, 200},  // silver
+    {255, 255, 255},  // white
+    {120, 210, 255},  // pale aqua
+};
+static const uint8_t FROST_N = sizeof(FROST) / sizeof(FROST[0]);
+
 static const uint8_t XMAS_N = sizeof(XMAS) / sizeof(XMAS[0]);
 const uint8_t EFFECT_COUNT = sizeof(EFFECT_NAMES) / sizeof(EFFECT_NAMES[0]);
 
@@ -282,6 +292,30 @@ static void render(uint32_t dt) {
     case 13: pairs(BILLS, 3, p, false); break;      // ... and the same three, standing still
     case 14: pairs(SABRES, 2, p, false); break;
     case 15: pairs(LAKESHORE, 2, p, false); break;
+
+    case 16: {  // Frost: icy colors drift slowly along the strip, with white glints like ice crystals
+      for (uint16_t i = 0; i < n; i++) {
+        // position in the palette: spread along the strip, wobbling slowly, drifting with time
+        uint16_t pos = (uint16_t)(i * 12 + p / 2 + scale8(sin8((uint8_t)(i * 5 + p / 3)), 60));
+        uint16_t span = (uint16_t)FROST_N * 256;
+        pos = (uint32_t)pos * FROST_N % span;
+        const uint8_t *a = FROST[pos >> 8], *b = FROST[((pos >> 8) + 1) % FROST_N];
+        uint8_t t = pos & 0xFF;
+        uint8_t r = a[0] + (((int)b[0] - a[0]) * t >> 8);
+        uint8_t g = a[1] + (((int)b[1] - a[1]) * t >> 8);
+        uint8_t bl = a[2] + (((int)b[2] - a[2]) * t >> 8);
+        // each pixel glints white briefly at its own random moment
+        uint8_t s = sin8((uint8_t)(p * (3 + (hash8(i, 3) & 3)) / 2 + hash8(i, 4)));
+        if (s > 248 && state.speed > 0) {
+          uint8_t w = (s - 248) * 34;  // 0..238, a short flash near the peak
+          r += scale8(255 - r, w);
+          g += scale8(255 - g, w);
+          bl += scale8(255 - bl, w);
+        }
+        px(i, r, g, bl);
+      }
+      break;
+    }
   }
 }
 
