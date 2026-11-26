@@ -37,7 +37,7 @@ const char *const EFFECT_NAMES[] = {"Solid",         "Breathe",       "Rainbow",
                                     "Color Wipe",    "Theater Chase", "Twinkle", "Comet",
                                     "Candle",        "Christmas",     "Buffalo Bills", "Buffalo Sabres",
                                     "Lake Shore",    "Buffalo Bills Solid", "Buffalo Sabres Solid",
-                                    "Lake Shore Solid", "Frost"};
+                                    "Lake Shore Solid", "Frost", "Valentine"};
 
 // Team / theme colors, shown as pairs of LEDs (2 of each color) repeating along the strip.
 static const uint8_t BILLS[][3] = {{0, 51, 141}, {198, 12, 48}, {255, 255, 255}};  // blue, red, white
@@ -61,6 +61,16 @@ static const uint8_t FROST[][3] = {
     {120, 210, 255},  // pale aqua
 };
 static const uint8_t FROST_N = sizeof(FROST) / sizeof(FROST[0]);
+
+// Valentine: deep red, rose, hot pink and blush, with a heartbeat pulse.
+static const uint8_t VALENTINE[][3] = {
+    {200, 0, 20},     // deep red
+    {255, 20, 60},    // rose red
+    {255, 40, 140},   // hot pink
+    {255, 150, 180},  // blush
+    {255, 70, 110},   // pink
+};
+static const uint8_t VALENTINE_N = sizeof(VALENTINE) / sizeof(VALENTINE[0]);
 
 static const uint8_t XMAS_N = sizeof(XMAS) / sizeof(XMAS[0]);
 const uint8_t EFFECT_COUNT = sizeof(EFFECT_NAMES) / sizeof(EFFECT_NAMES[0]);
@@ -163,6 +173,16 @@ static uint8_t sin8(uint8_t x) {
 static inline uint8_t hash8(uint16_t i, uint8_t salt) {
   uint32_t h = (i + 1) * 2654435761u ^ (salt * 40503u);
   return (h >> 16) ^ (h >> 24);
+}
+
+// Smoothly blended, cyclic palette: 256 units of pos = one trip through all colors.
+static void blendPalette(const uint8_t (*colors)[3], uint8_t count, uint16_t pos, uint8_t &r, uint8_t &g, uint8_t &b) {
+  uint32_t q = (uint32_t)pos * count % ((uint32_t)count * 256);
+  const uint8_t *a = colors[q >> 8], *c = colors[((q >> 8) + 1) % count];
+  uint8_t t = q & 0xFF;
+  r = a[0] + (((int)c[0] - a[0]) * t >> 8);
+  g = a[1] + (((int)c[1] - a[1]) * t >> 8);
+  b = a[2] + (((int)c[2] - a[2]) * t >> 8);
 }
 
 // Repeating pairs of colors (AA BB CC AA BB CC ...). The moving versions slowly march along the
@@ -297,13 +317,8 @@ static void render(uint32_t dt) {
       for (uint16_t i = 0; i < n; i++) {
         // position in the palette: spread along the strip, wobbling slowly, drifting with time
         uint16_t pos = (uint16_t)(i * 12 + p / 2 + scale8(sin8((uint8_t)(i * 5 + p / 3)), 60));
-        uint16_t span = (uint16_t)FROST_N * 256;
-        pos = (uint32_t)pos * FROST_N % span;
-        const uint8_t *a = FROST[pos >> 8], *b = FROST[((pos >> 8) + 1) % FROST_N];
-        uint8_t t = pos & 0xFF;
-        uint8_t r = a[0] + (((int)b[0] - a[0]) * t >> 8);
-        uint8_t g = a[1] + (((int)b[1] - a[1]) * t >> 8);
-        uint8_t bl = a[2] + (((int)b[2] - a[2]) * t >> 8);
+        uint8_t r, g, bl;
+        blendPalette(FROST, FROST_N, pos, r, g, bl);
         // each pixel glints white briefly at its own random moment
         uint8_t s = sin8((uint8_t)(p * (3 + (hash8(i, 3) & 3)) / 2 + hash8(i, 4)));
         if (s > 248 && state.speed > 0) {
@@ -313,6 +328,28 @@ static void render(uint32_t dt) {
           bl += scale8(255 - bl, w);
         }
         px(i, r, g, bl);
+      }
+      break;
+    }
+
+    case 17: {  // Valentine: reds and pinks drifting along the strip, pulsing with a heartbeat
+      // Heartbeat: a strong beat then a softer one ("lub-dub"), then rest. ~1.2 s per beat at
+      // speed 128; speed 0 holds still with no pulse.
+      uint8_t lvl = 255;
+      if (state.speed > 0) {
+        const uint32_t q = (phase >> 8) % 640;  // 16 sub-steps per p unit
+        auto bump = [](int32_t x, int32_t center, int32_t width, int32_t height) -> int32_t {
+          int32_t d = x > center ? x - center : center - x;
+          return d >= width ? 0 : height * (width - d) / width;
+        };
+        int32_t v = 140 + bump(q, 40, 50, 115) + bump(q, 130, 50, 75);
+        lvl = v > 255 ? 255 : v;
+      }
+      for (uint16_t i = 0; i < n; i++) {
+        uint16_t pos = (uint16_t)(i * 10 + p / 3);
+        uint8_t r, g, b;
+        blendPalette(VALENTINE, VALENTINE_N, pos, r, g, b);
+        px(i, scale8(r, lvl), scale8(g, lvl), scale8(b, lvl));
       }
       break;
     }
