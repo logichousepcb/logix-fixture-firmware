@@ -1,0 +1,8 @@
+# WT32-ETH01 (4 MB): same layout as WLED's ESP32 builds (tools/WLED_ESP32_4MB_1MB_FS.csv),
+# so the first install can be uploaded through WLED's own updater (OTA can't change partitions).
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x180000,
+app1,     app,  ota_1,   0x190000, 0x180000,
+spiffs,   data, spiffs,  0x310000, 0xF0000,

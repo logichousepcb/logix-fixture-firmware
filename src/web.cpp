@@ -1,8 +1,6 @@
 #include "web.h"
 
 #include <ArduinoJson.h>
-#include <ESP8266WebServer.h>
-#include <ESP8266WiFi.h>
 #include <WebSocketsServer.h>
 
 #include "config.h"
@@ -10,11 +8,13 @@
 #include "ir.h"
 #include "leds.h"
 #include "net.h"
+#include "platform.h"
 #include "web_ui.h"
 
-static ESP8266WebServer server(80);
+static WebServerT server(80);
 static WebSocketsServer ws(WS_PORT);
 static String updateError;
+static bool updateFirstChunk = false;
 static uint32_t wsSentVersion = 0;
 static uint32_t wsLastPush = 0;
 
@@ -198,7 +198,7 @@ static String applyState(JsonObjectConst o) {
 
 // --------------------------------------------------------------------------- captive portal
 static bool isOwnHost(const String &host) {
-  return host == netApIp().toString() || host == WiFi.localIP().toString() ||
+  return host == netApIp().toString() || host == netIp().toString() ||
          host.equalsIgnoreCase(deviceHostname() + ".local") || host.equalsIgnoreCase(deviceHostname());
 }
 
@@ -243,14 +243,17 @@ static void handleInfo() {
   d["auth"] = cfg.apiToken.length() > 0;
   d["wsPort"] = WS_PORT;
   d["fixture"] = cfg.fixture;  // fixture model, so apps can pick an icon
+  d["board"] = BOARD_ID;       // hardware: "esp12" or "wt32-eth01" (picks the right firmware file)
   if (!authed()) return sendJson(200, d);
 
   d["hostname"] = deviceHostname();
   d["build"] = __DATE__ " " __TIME__;
   d["mac"] = WiFi.macAddress();
   char chip[7];
-  snprintf(chip, sizeof(chip), "%06X", (unsigned)ESP.getChipId());
+  snprintf(chip, sizeof(chip), "%06X", (unsigned)chipId24());
   d["chipId"] = chip;
+  IPAddress ip = netIp();
+  if (ip != IPAddress()) d["ip"] = ip.toString();  // home-network address, Ethernet or WiFi
 
   JsonObject cap = d["capabilities"].to<JsonObject>();
   cap["rgb"] = true;
@@ -262,6 +265,7 @@ static void handleInfo() {
   cap["websocket"] = true;
   cap["maxLeds"] = MAX_LEDS;
   cap["ota"] = true;
+  cap["ethernet"] = netHasEth();
 
   JsonObject w = d["wifi"].to<JsonObject>();
   w["mode"] = netModeStr();
@@ -276,6 +280,18 @@ static void handleInfo() {
   if (netApActive()) {
     w["apSsid"] = netApSsid();
     w["apIp"] = netApIp().toString();
+  }
+
+  if (netHasEth()) {
+    JsonObject e = d["eth"].to<JsonObject>();
+    e["link"] = netEthLink();
+    e["connected"] = netEthUp();
+    if (netEthUp()) e["ip"] = netEthIp().toString();
+    if (netEthLink()) {
+      e["speed"] = netEthSpeed();
+      e["fullDuplex"] = netEthFullDuplex();
+    }
+    e["mac"] = netEthMac();
   }
 
   JsonObject l = d["leds"].to<JsonObject>();
@@ -301,8 +317,8 @@ static void handleInfo() {
   sys["freeHeap"] = ESP.getFreeHeap();
   sys["sketchSize"] = ESP.getSketchSize();
   sys["freeSketchSpace"] = ESP.getFreeSketchSpace();
-  sys["flashSize"] = ESP.getFlashChipRealSize();
-  sys["resetReason"] = ESP.getResetReason();
+  sys["flashSize"] = flashSize();
+  sys["resetReason"] = resetReason();
   sendJson(200, d);
 }
 
@@ -434,6 +450,7 @@ static void handleWifiScan() {
   JsonDocument d;
   int n = WiFi.scanComplete();
   if (n == WIFI_SCAN_FAILED) {
+    netPrepareScan();
     WiFi.scanNetworks(true, false);
     d["scanning"] = true;
   } else if (n == WIFI_SCAN_RUNNING) {
@@ -458,7 +475,11 @@ static void handleWifiScan() {
       JsonObject e = a.add<JsonObject>();
       e["ssid"] = s;
       e["rssi"] = WiFi.RSSI(best);
+      #if defined(ESP32)
+      e["secure"] = WiFi.encryptionType(best) != WIFI_AUTH_OPEN;
+#else
       e["secure"] = WiFi.encryptionType(best) != ENC_TYPE_NONE;
+#endif
       e["channel"] = WiFi.channel(best);
     }
     WiFi.scanDelete();
@@ -483,9 +504,12 @@ static void handleWifiPost() {
     scheduleReboot(1000);
     return;
   }
-  sendOk(false);
   // Try the new network right away. If the setup AP is up it stays up (AP+STA) so
-  // the browser can watch /api/info for the result.
+  // the browser can watch /api/info for the result. With Ethernet up it's kept as the backup.
+  JsonDocument r;
+  r["ok"] = true;
+  if (netEthUp()) r["standby"] = true;
+  sendJson(200, r);
   netConnect();
 }
 
@@ -498,7 +522,7 @@ static void handleUpdateDone() {
   } else if (updateError.startsWith("unauthorized")) {
     sendErr(401, updateError);
   } else {
-    sendErr(500, updateError.length() ? updateError : String("update failed"));
+    sendErr(updateError.startsWith("wrong board") ? 400 : 500, updateError.length() ? updateError : String("update failed"));
     ledsPause(false);
   }
 }
@@ -513,17 +537,24 @@ static void handleUpdateUpload() {
     }
     ledsPause(true);
     Serial.printf("[ota] receiving %s\n", up.filename.c_str());
-    uint32_t space = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
-    if (!Update.begin(space, U_FLASH)) updateError = Update.getErrorString();
+    updateFirstChunk = true;
+    if (!updateBegin()) updateError = updateErrorStr();
   } else if (up.status == UPLOAD_FILE_WRITE) {
+    if (updateFirstChunk && !updateError.length()) {
+      updateFirstChunk = false;
+      if (!firmwareImageOk(up.buf, up.currentSize)) {
+        updateError = "wrong board: this firmware file is not for " BOARD_ID;
+        Update.end();  // partial image: discards it on both chips
+      }
+    }
     if (!updateError.length() && Update.write(up.buf, up.currentSize) != up.currentSize)
-      updateError = Update.getErrorString();
+      updateError = updateErrorStr();
   } else if (up.status == UPLOAD_FILE_END) {
     if (!updateError.length()) {
       if (Update.end(true))
         Serial.printf("[ota] success, %u bytes\n", up.totalSize);
       else
-        updateError = Update.getErrorString();
+        updateError = updateErrorStr();
     }
   } else if (up.status == UPLOAD_FILE_ABORTED) {
     Update.end();
@@ -627,7 +658,12 @@ static void handleNotFound() {
 // --------------------------------------------------------------------------- setup
 void webBegin() {
   server.enableCORS(true);  // lets other pages / dashboards call the API
+#if defined(ESP32)
+  static const char *headers[] = {"Authorization", "X-Api-Key"};
+  server.collectHeaders(headers, 2);
+#else
   server.collectHeaders("Authorization", "X-Api-Key");
+#endif
 
   server.on("/", HTTP_GET, handleRoot);
 

@@ -1,5 +1,6 @@
 // LoGiX Base Fixture firmware
 // ESP-12F (ESP8266) + CH340B USB, WS2812 LED headers on GPIO2, TSOP38238 IR receiver on GPIO4.
+// Also builds for the WT32-ETH01 (ESP32 + LAN8720 Ethernet); see platform.h.
 // See README.md for hardware notes, setup, and the HTTP API.
 
 #include <Arduino.h>
@@ -8,12 +9,13 @@
 #include "ir.h"
 #include "leds.h"
 #include "net.h"
+#include "platform.h"
 #include "web.h"
 
 void setup() {
   Serial.begin(115200);
   delay(50);
-  Serial.printf("\n\n[sys] %s %s booting (%s)\n", FW_NAME, FW_VERSION, ESP.getResetReason().c_str());
+  Serial.printf("\n\n[sys] %s %s booting (%s)\n", FW_NAME, FW_VERSION, resetReason().c_str());
 
   configBegin();
 

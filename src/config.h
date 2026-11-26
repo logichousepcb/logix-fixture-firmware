@@ -1,6 +1,8 @@
 #pragma once
 #include <Arduino.h>
 
+#include "platform.h"
+
 #define FW_NAME "LoGiX Fixture"
 #define FW_VERSION "1.7.0"
 #define FW_MODEL "logixfixture"  // board identifier for apps (mDNS TXT "model"), LoGiX naming scheme
@@ -17,11 +19,11 @@ struct Config {
   String ssid;               // home WiFi; empty = stay in setup-AP mode
   String pass;
   String apPass;             // setup AP password; empty = open AP (8..63 chars otherwise)
-  int8_t ledPin = 2;         // LED data GPIO (board: GPIO2 -> headers U2/U3/U4)
-  uint16_t ledCount = 30;
+  int8_t ledPin = DEFAULT_LED_PIN;        // LED data GPIO (board default in platform.h)
+  uint16_t ledCount = DEFAULT_LED_COUNT;
   String colorOrder = "GRB"; // WS2812B = GRB
-  int8_t irPin = 4;          // IR receiver GPIO (board: TSOP38238 on GPIO4); -1 = disabled
-  uint16_t maxMa = 500;      // total USB current budget in mA; 0 = no limit
+  int8_t irPin = DEFAULT_IR_PIN;          // IR receiver GPIO; -1 = disabled
+  uint16_t maxMa = DEFAULT_MAX_MA;        // total current budget in mA; 0 = no limit
   String apiToken;           // empty = API open; otherwise required on every API call
   String fixture = "custom"; // fixture model: custom, string, snowflake91 (UI icon + LED-count preset)
 };

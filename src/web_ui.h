@@ -74,6 +74,7 @@ code{background:#10131a;padding:1px 5px;border-radius:5px;font-size:12.5px}
   </nav>
 
   <div class="tab" id="t-wifi">
+    <div class="hint" id="ethst" hidden></div>
     <div class="hint" id="wcur"></div>
     <button class="sec" id="scan">Scan for networks</button>
     <div class="nets" id="nets" hidden></div>
@@ -105,7 +106,7 @@ code{background:#10131a;padding:1px 5px;border-radius:5px;font-size:12.5px}
     <div class="row"><label>Color order</label><select id="order"><option>GRB</option><option>RGB</option><option>BRG</option><option>RBG</option><option>GBR</option><option>BGR</option></select></div>
     <div class="row"><label>IR receiver GPIO</label><select id="irpin"></select></div>
     <div class="row"><label>Power limit (mA)</label><input id="maxma" type="number" min="0" max="20000" step="50"></div>
-    <div class="hint">Power limit is the total current budget for the board plus LEDs (0 = no limit). A USB 2.0 port gives about 500&nbsp;mA, a USB charger usually 1000&ndash;2400&nbsp;mA.</div>
+    <div class="hint" id="mahint">Power limit is the total current budget for the board plus LEDs (0 = no limit). A USB 2.0 port gives about 500&nbsp;mA, a USB charger usually 1000&ndash;2400&nbsp;mA.</div>
     <div class="actions"><button id="hsave">Save &amp; reboot</button></div>
     <div class="msg" id="hmsg"></div>
   </div>
@@ -117,7 +118,7 @@ code{background:#10131a;padding:1px 5px;border-radius:5px;font-size:12.5px}
     <div class="actions"><button id="fwup">Upload &amp; install</button></div>
     <progress id="fwprog" value="0" max="100" hidden></progress>
     <div class="msg" id="fwmsg"></div>
-    <div class="hint">Use a <code>-4mb.bin</code> release file (<code>-1mb.bin</code> for 1&nbsp;MB modules) or <code>.pio/build/usb/firmware.bin</code> from a PlatformIO build. Settings are kept.</div>
+    <div class="hint" id="fwhint">Use a <code>-4mb.bin</code> release file (<code>-1mb.bin</code> for 1&nbsp;MB modules) or <code>.pio/build/usb/firmware.bin</code> from a PlatformIO build. Settings are kept.</div>
   </div>
 
   <div class="tab" id="t-info">
@@ -137,6 +138,10 @@ const LEDP=[[2,'GPIO2 – LED headers (board default)'],[4,'GPIO4 – IR receive
 const MODELS=[['custom','Custom / other',0,''],['string','String Lights',0,'/icon/string.webp'],['snowflake91','91 Pixel Snowflake',91,'/icon/snowflake91.webp']];
 const model=id=>MODELS.find(m=>m[0]===id)||MODELS[0];
 function showIcon(el,id){const m=model(id);el.hidden=!m[3];if(m[3])el.src=m[3];else el.removeAttribute('src')}
+// WT32-ETH01: Ethernet owns GPIO0/16/18/19/21/22/23/25/26/27; 35/36/39 are input-only (IR only).
+const LEDP32=[[4,'GPIO4 – output 4 (board default)'],[12,'GPIO12 – output 1, must be LOW at boot'],[1,'GPIO1/TX – output 2, disables serial'],[3,'GPIO3/RX – output 3, disables serial'],[2,'GPIO2'],[5,'GPIO5'],[14,'GPIO14'],[15,'GPIO15'],[17,'GPIO17'],[32,'GPIO32'],[33,'GPIO33']];
+const IRP32=[[-1,'Disabled'],[36,'GPIO36 (input only)'],[39,'GPIO39 (input only)'],[35,'GPIO35 (input only)'],[2,'GPIO2'],[4,'GPIO4'],[5,'GPIO5'],[12,'GPIO12'],[14,'GPIO14'],[15,'GPIO15'],[17,'GPIO17'],[32,'GPIO32'],[33,'GPIO33'],[1,'GPIO1/TX – disables serial'],[3,'GPIO3/RX – disables serial']];
+const ETH=()=>I.board==='wt32-eth01';
 const IRP=[[-1,'Disabled'],[4,'GPIO4 – TSOP38238 (board default)'],[5,'GPIO5'],[12,'GPIO12'],[13,'GPIO13'],[14,'GPIO14'],[0,'GPIO0'],[2,'GPIO2'],[3,'GPIO3/RX – disables serial'],[1,'GPIO1/TX – disables serial']];
 
 let TOK='';try{TOK=localStorage.getItem('logixToken')||''}catch(e){}
@@ -185,18 +190,22 @@ $('tabs').onclick=e=>{if(e.target.dataset.t)tab(e.target.dataset.t)};
 // ---- info / header
 function renderHeader(){
   $('title').textContent=I.name;document.title=I.name;showIcon($('hicon'),I.fixture);
-  const w=I.wifi,p=$('pill');
-  if(w.connected){p.textContent=w.ssid+' · '+w.ip;p.className='pill ok'}
+  const w=I.wifi,p=$('pill'),e=I.eth;
+  if(e&&e.connected){p.textContent='Ethernet · '+e.ip;p.className='pill ok'}
+  else if(w.connected){p.textContent=w.ssid+' · '+w.ip;p.className='pill ok'}
   else if(w.apActive){p.textContent='Setup hotspot';p.className='pill warn'}
   else{p.textContent='Wi‑Fi: '+w.status;p.className='pill warn'}
-  $('banner').hidden=!(w.apActive&&!w.connected);
+  $('banner').hidden=!(w.apActive&&!w.connected&&!(e&&e.connected));
+  if(e){$('ethst').hidden=false;$('ethst').textContent=e.connected?`Ethernet connected: ${e.ip} (${e.speed} Mbit/s). A Wi‑Fi network saved here is used as a backup when the cable is unplugged.`
+    :e.link?'Ethernet: cable connected, waiting for an address…':'Ethernet: no cable. Wi‑Fi is used instead.'}
   $('wcur').textContent=w.ssid?`Saved network: ${w.ssid} (${w.status}${w.connected?', '+w.rssi+' dBm':''})`:'No network saved yet.';
   const l=I.leds;$('ma').textContent=`${l.count} LEDs on GPIO${l.pin} · ~${l.estimatedMa} mA`+(l.maxMa?` of ${l.maxMa} mA limit`:'')+(l.powerLimited?' · dimmed by power limit':'');
   $('fwver').textContent=I.version;$('fwbuild').textContent='('+I.build+')';
 }
 function renderInfo(){if(!I.wifi)return;const w=I.wifi,s=I.system;
   const rows=[['Name',I.name],['Hostname',I.hostname+'.local'],['Firmware',I.firmware+' '+I.version],['MAC',I.mac],['Chip ID',I.chipId],
-   ['Wi‑Fi',w.ssid?w.ssid+' – '+w.status:'not configured'],['IP',w.ip||'–'],['Signal',w.rssi?w.rssi+' dBm':'–'],
+   ...(I.eth?[['Ethernet',I.eth.connected?`${I.eth.ip} · ${I.eth.speed} Mbit/s ${I.eth.fullDuplex?'full':'half'} duplex`:I.eth.link?'link up, no address':'no cable'],['Ethernet MAC',I.eth.mac]]:[]),
+   ['Wi‑Fi',w.ssid?w.ssid+' – '+w.status:'not configured'],['IP',I.ip||w.ip||'–'],['Signal',w.rssi?w.rssi+' dBm':'–'],
    ['Setup AP',w.apActive?w.apSsid+' ('+w.apIp+')':'off'],['LEDs',`${I.leds.count} × ${I.leds.colorOrder} on GPIO${I.leds.pin}`],
    ['IR',I.ir.enabled?`GPIO${I.ir.pin}`+(I.ir.lastCode?` · last code ${I.ir.lastCode}`:''):'disabled'],
    ['Uptime',fmtUp(s.uptimeS)],['Free heap',s.freeHeap+' B'],['Sketch',Math.round(s.sketchSize/1024)+' KB ('+Math.round(s.freeSketchSpace/1024)+' KB free)'],['Last reset',s.resetReason]];
@@ -221,7 +230,7 @@ async function checkUpdate(){let r=null;
   REL=r;showUpdate()}
 function showUpdate(){if(!REL||!I||!I.version)return;const v=REL.tag.replace(/^v/,''),up=newer(v,I.version),u=$('upd'),f=$('fwlatest');
   u.hidden=!up;u.textContent='Update '+v;u.title=`Firmware ${v} is available (installed ${I.version})`;
-  const big=!I.system||I.system.flashSize>1048576,a=REL.assets.find(x=>x.name.endsWith(big?'-4mb.bin':'-1mb.bin'));
+  const big=!I.system||I.system.flashSize>1048576,a=REL.assets.find(x=>x.name.endsWith(ETH()?'-eth01.bin':big?'-4mb.bin':'-1mb.bin'));
   f.innerHTML=up?`Update available: <b>${esc(v)}</b>. <a href="${esc(a?a.url:REL.url)}">Download ${esc(a?a.name:'from GitHub')}</a>, then upload it below. <a href="${esc(REL.url)}" target="_blank" rel="noopener">Release notes</a>`
     :`Up to date (latest release ${esc(v)}).`;
   f.hidden=false}
@@ -235,7 +244,8 @@ $('scan').onclick=async()=>{const b=$('scan');b.disabled=true;b.textContent='Sca
   b.disabled=false;b.textContent='Scan again'};
 $('nets').onclick=e=>{const d=e.target.closest('.net');if(d&&d.dataset.s){$('ssid').value=d.dataset.s;$('pass').focus()}};
 $('wsave').onclick=async()=>{const ssid=$('ssid').value.trim();if(!ssid)return msg('wmsg','Enter a network name.','bad');
-  try{await post('/api/wifi',{ssid,pass:$('pass').value});}catch(e){return msg('wmsg',e.message,'bad')}
+  let wr;try{wr=await post('/api/wifi',{ssid,pass:$('pass').value});}catch(e){return msg('wmsg',e.message,'bad')}
+  if(wr&&wr.standby)return msg('wmsg',`Saved "${ssid}" as the backup network. It is used when the Ethernet cable is unplugged.`,'ok');
   msg('wmsg','Connecting to '+ssid+'…');
   for(let i=0;i<15;i++){await new Promise(r=>setTimeout(r,2000));
     try{I=await api('/api/info');renderHeader();const w=I.wifi;
@@ -243,7 +253,7 @@ $('wsave').onclick=async()=>{const ssid=$('ssid').value.trim();if(!ssid)return m
       if(i>3&&(w.status==='wrong password'||w.status==='network not found'))return msg('wmsg','Could not connect: '+w.status+'.','bad')}
     catch(e){}}
   msg('wmsg','No connection yet ('+(I.wifi?I.wifi.status:'unknown')+'). Check the password and try again.','bad')};
-$('wforget').onclick=async()=>{if(!confirm('Forget the saved Wi‑Fi network? The fixture will reboot into setup-hotspot mode.'))return;
+$('wforget').onclick=async()=>{if(!confirm(I.eth&&I.eth.connected?'Forget the saved Wi‑Fi network? The fixture reboots and stays on Ethernet.':'Forget the saved Wi‑Fi network? The fixture will reboot into setup-hotspot mode.'))return;
   try{await post('/api/wifi',{ssid:''});msg('wmsg','Forgotten. Rebooting into setup mode…','ok')}catch(e){msg('wmsg',e.message,'bad')}};
 
 // ---- device
@@ -291,6 +301,10 @@ $('reset').onclick=async()=>{if(!confirm('Erase all settings (Wi‑Fi, name, GPI
 
 // ---- boot
 (async()=>{
+  try{I=await api('/api/info')}catch(e){}
+  if(ETH()){opts($('ledpin'),LEDP32);opts($('irpin'),IRP32);
+    $('mahint').textContent='Power limit is the total current budget for the board plus LEDs (0 = no limit). Set it to what your LED power supply can deliver.';
+    $('fwhint').innerHTML='Use a <code>-eth01.bin</code> release file or <code>.pio/build/eth01/firmware.bin</code> from a PlatformIO build. Settings are kept.'}
   try{const fx=await api('/api/effects');$('fx').innerHTML=fx.map(e=>`<option value="${e.id}">${e.name}</option>`).join('')}catch(e){}
   try{C=await api('/api/config');$('name').value=C.name;$('name').oninput();$('ssid').value=C.ssid;
     $('ledpin').value=C.ledPin;$('ledcount').value=C.ledCount;$('order').value=C.colorOrder;$('irpin').value=C.irPin;$('maxma').value=C.maxMa;

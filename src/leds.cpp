@@ -3,12 +3,15 @@
 #include <NeoPixelBus.h>
 
 #include "config.h"
+#include "platform.h"
 
 // ---------------------------------------------------------------------------
 // Driver: pick the best NeoPixelBus method for the configured pin at runtime.
+// ESP8266:
 //   GPIO2 -> UART1 hardware (doesn't block interrupts, so IR + WiFi stay happy)
 //   GPIO3 -> I2S DMA (RX pin)
 //   other -> bit-bang
+// ESP32: RMT hardware on any output pin (non-blocking; one RMT channel per strip)
 // Bytes are always sent raw (NeoRgbFeature); color order is applied by us.
 // ---------------------------------------------------------------------------
 class LedDriver {
@@ -77,7 +80,6 @@ const uint8_t EFFECT_COUNT = sizeof(EFFECT_NAMES) / sizeof(EFFECT_NAMES[0]);
 
 static const uint32_t FRAME_MS = 20;      // 50 fps
 static const float FADE_MS = 400.0f;      // on/off & brightness transition
-static const uint16_t BOARD_MA = 80;      // ESP8266 + regulator overhead
 static const uint8_t MA_PER_CHANNEL = 20; // WS2812 per color at full duty
 
 static LedDriver *drv = nullptr;
@@ -123,17 +125,23 @@ void ledsBegin() {
   n = cfg.ledCount;
   frame = new uint8_t[n * 3]();
   uint8_t pin = cfg.ledPin;
+#if defined(ESP32)
+  drv = new NpbDriver<NeoEsp32Rmt0Ws2812xMethod>(n, pin);
+  const char *method = "RMT0";
+#else
   if (pin == 2)
     drv = new NpbDriver<NeoEsp8266Uart1Ws2812xMethod>(n, pin);
   else if (pin == 3)
     drv = new NpbDriver<NeoEsp8266DmaWs2812xMethod>(n, pin);
   else
     drv = new NpbDriver<NeoEsp8266BitBangWs2812xMethod>(n, pin);
+  const char *method = pin == 2 ? "UART1" : pin == 3 ? "DMA" : "bit-bang";
+#endif
   drv->begin();
   ledsSetOrder(cfg.colorOrder);
   dispBri = 0;  // fade in on boot
   drv->show();
-  Serial.printf("[led] %u LEDs on GPIO%u (%s)\n", n, pin, pin == 2 ? "UART1" : pin == 3 ? "DMA" : "bit-bang");
+  Serial.printf("[led] %u LEDs on GPIO%u (%s)\n", n, pin, method);
 }
 
 // --------------------------------------------------------------------------- helpers

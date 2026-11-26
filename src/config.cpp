@@ -1,8 +1,6 @@
 #include "config.h"
 
 #include <ArduinoJson.h>
-#include <ESP8266WiFi.h>
-#include <LittleFS.h>
 
 Config cfg;
 State state;
@@ -19,7 +17,7 @@ static uint32_t rebootAt = 0;
 
 static String chipSuffix() {
   char b[5];
-  snprintf(b, sizeof(b), "%04X", (unsigned)(ESP.getChipId() & 0xFFFF));
+  snprintf(b, sizeof(b), "%04X", (unsigned)(chipId24() & 0xFFFF));
   return String(b);
 }
 
@@ -29,7 +27,7 @@ String defaultName() { return String("LoGiX Fixture ") + chipSuffix(); }
 // other LoGiX devices, so an app can key every device the same way.
 String deviceId() {
   uint8_t m[6];
-  WiFi.macAddress(m);
+  stationMac(m);
   char b[13];
   snprintf(b, sizeof(b), "%02x%02x%02x%02x%02x%02x", m[0], m[1], m[2], m[3], m[4], m[5]);
   return String(b);
@@ -41,7 +39,7 @@ String generateToken() {
   String t;
   for (int i = 0; i < 3; i++) {
     char b[9];
-    snprintf(b, sizeof(b), "%08x", (unsigned)RANDOM_REG32);  // hardware RNG (true random with RF on)
+    snprintf(b, sizeof(b), "%08x", (unsigned)hwRandom());  // hardware RNG
     t += b;
   }
   return t;
@@ -70,6 +68,16 @@ String hostnameFromName(const String &name) {
 
 String deviceHostname() { return hostnameFromName(cfg.name); }
 
+#if defined(ESP32)
+// WT32-ETH01: GPIO0, 16, 18, 19, 21, 22, 23, 25, 26, 27 belong to Ethernet; 6-11 are the flash bus.
+// 34-39 are input-only, so they can take an IR receiver but not LEDs.
+bool validLedPin(int p) {
+  return p == 1 || p == 2 || p == 3 || p == 4 || p == 5 || p == 12 || p == 14 || p == 15 || p == 17 ||
+         p == 32 || p == 33;
+}
+
+bool validIrPin(int p) { return p == -1 || validLedPin(p) || p == 35 || p == 36 || p == 39; }
+#else
 bool validLedPin(int p) {
   // 6-11 are the flash bus; GPIO16 can't be driven by the LED driver.
   return p == 0 || p == 1 || p == 2 || p == 3 || p == 4 || p == 5 || (p >= 12 && p <= 15);
@@ -79,6 +87,7 @@ bool validIrPin(int p) {
   // Needs an interrupt-capable pin (not 16). GPIO15 excluded: TSOP idles HIGH, GPIO15 must be LOW at boot.
   return p == -1 || (p >= 0 && p <= 5) || (p >= 12 && p <= 14);
 }
+#endif
 
 bool validColorOrder(const String &o) {
   return o == "RGB" || o == "RBG" || o == "GRB" || o == "GBR" || o == "BRG" || o == "BGR";
@@ -89,6 +98,7 @@ bool validFixture(const String &f) { return f == "custom" || f == "string" || f 
 static void loadConfig() {
   cfg = Config();
   cfg.name = defaultName();
+  if (!LittleFS.exists(CFG_PATH)) return;
   File f = LittleFS.open(CFG_PATH, "r");
   if (!f) return;
   JsonDocument d;
@@ -135,6 +145,7 @@ bool configSave() {
 }
 
 static void loadState() {
+  if (!LittleFS.exists(STATE_PATH)) return;
   File f = LittleFS.open(STATE_PATH, "r");
   if (!f) return;
   JsonDocument d;
