@@ -1,8 +1,10 @@
-# WT32-ETH01 (4 MB): same layout as WLED's ESP32 builds (tools/WLED_ESP32_4MB_1MB_FS.csv),
-# so the first install can be uploaded through WLED's own updater (OTA can't change partitions).
+# WT32-ETH01 (4 MB): the layout found on the board when it ran WLED 16.0.1 (read back through
+# /api/info -> system.partitions). OTA updates can't change partitions, so a serial flash with this
+# same table keeps any board's settings (LittleFS in "spiffs") where existing ones have them.
 # Name,   Type, SubType, Offset,   Size,     Flags
 nvs,      data, nvs,     0x9000,   0x5000,
 otadata,  data, ota,     0xe000,   0x2000,
-app0,     app,  ota_0,   0x10000,  0x180000,
-app1,     app,  ota_1,   0x190000, 0x180000,
-spiffs,   data, spiffs,  0x310000, 0xF0000,
+app0,     app,  ota_0,   0x10000,  0x1C0000,
+app1,     app,  ota_1,   0x1D0000, 0x1C0000,
+eeprom,   data, 0x99,    0x390000, 0x1000,
+spiffs,   data, spiffs,  0x391000, 0xF000,

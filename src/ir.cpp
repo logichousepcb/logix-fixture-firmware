@@ -33,16 +33,24 @@ void irBegin() {
   Serial.printf("[ir] receiver on GPIO%d\n", cfg.irPin);
 }
 
+// The remote works like the "All" chip in the web UI: colors and effects go to every output.
 static void color(uint8_t r, uint8_t g, uint8_t b) {
-  state.r = r;
-  state.g = g;
-  state.b = b;
-  state.effect = 0;
+  for (Seg &s : state.seg) {
+    s.r = r;
+    s.g = g;
+    s.b = b;
+    s.effect = 0;
+    s.on = true;
+  }
   state.on = true;
 }
 static void effect(uint8_t e) {
-  state.effect = e;
+  for (Seg &s : state.seg) {
+    s.effect = e;
+    s.on = true;
+  }
   state.on = true;
+  ledsSync();
 }
 
 static bool handle(uint32_t code) {

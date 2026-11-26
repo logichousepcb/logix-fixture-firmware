@@ -20,7 +20,10 @@ void setup() {
   configBegin();
 
   // GPIO1/GPIO3 are the serial TX/RX pins; if the user assigned them to LEDs or IR, release serial.
-  if (cfg.ledPin == 1 || cfg.ledPin == 3 || cfg.irPin == 1 || cfg.irPin == 3) {
+  bool serialPins = cfg.irPin == 1 || cfg.irPin == 3;
+  for (uint8_t k = 0; k < MAX_OUTPUTS; k++)
+    if (outputUsed(k) && (cfg.out[k].pin == 1 || cfg.out[k].pin == 3)) serialPins = true;
+  if (serialPins) {
     Serial.println("[sys] GPIO1/3 in use by LEDs/IR - serial logging disabled");
     Serial.flush();
     Serial.end();

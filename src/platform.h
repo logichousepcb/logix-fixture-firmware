@@ -27,9 +27,11 @@ static const int ETH01_MDC = 23;
 static const int ETH01_MDIO = 18;
 // RMII data pins 19, 21, 22, 25, 26, 27 and the clock input on GPIO0 are also taken.
 
-// Defaults for a fresh board. GPIO4 is one of the 4 LED outputs and keeps serial logging working.
-static const int8_t DEFAULT_LED_PIN = 4;
-static const uint16_t DEFAULT_LED_COUNT = 125;
+// Four LED outputs, in the board's order (same as its WLED setup). GPIO1/3 are the serial pins,
+// so serial logging stops while those outputs are in use.
+static const uint8_t MAX_OUTPUTS = 4;
+static const int8_t DEFAULT_OUT_PINS[MAX_OUTPUTS] = {12, 1, 3, 4};
+static const uint16_t DEFAULT_LED_COUNT = 60;  // per output
 static const int8_t DEFAULT_IR_PIN = -1;
 static const uint16_t DEFAULT_MAX_MA = 0;  // powered from an external LED supply: no limit
 static const uint16_t BOARD_MA = 200;      // ESP32 + Ethernet PHY overhead
@@ -73,7 +75,8 @@ static inline bool firmwareImageOk(const uint8_t *b, size_t n) {
 #define HAS_ETH 0
 using WebServerT = ESP8266WebServer;
 
-static const int8_t DEFAULT_LED_PIN = 2;  // board: GPIO2 -> headers U2/U3/U4
+static const uint8_t MAX_OUTPUTS = 1;
+static const int8_t DEFAULT_OUT_PINS[MAX_OUTPUTS] = {2};  // board: GPIO2 -> headers U2/U3/U4
 static const uint16_t DEFAULT_LED_COUNT = 30;
 static const int8_t DEFAULT_IR_PIN = 4;   // board: TSOP38238 on GPIO4
 static const uint16_t DEFAULT_MAX_MA = 500;

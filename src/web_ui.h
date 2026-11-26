@@ -46,18 +46,26 @@ button:disabled{opacity:.5;cursor:default}
 .banner{background:#3d2e12;color:#ffd58a;border-radius:12px;padding:12px 14px;margin-bottom:14px;font-size:14px}
 progress{width:100%;height:10px;margin-top:10px}
 dl{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;font-size:13px;margin:0}
-dt{color:var(--mu)}dd{margin:0;word-break:break-all}
+dt{color:var(--mu)}dd{margin:0;word-break:break-all;white-space:pre-line}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
 a{color:var(--ac)}
 code{background:#10131a;padding:1px 5px;border-radius:5px;font-size:12.5px}
 .ttl{display:flex;align-items:center;gap:10px;min-width:0}
 #hicon{flex:none;height:34px;max-width:96px;object-fit:contain}
 #micon{display:block;max-height:110px;max-width:100%;margin:4px auto 2px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 14px}
+.chips button{display:flex;align-items:center;gap:7px;background:var(--line);color:var(--tx);padding:6px 12px;border-radius:99px;font-weight:500;font-size:13px}
+.chips button.act{background:var(--ac);color:#fff}
+.chips button.off{color:var(--mu)}
+.chips i{width:11px;height:11px;border-radius:50%;flex:none;border:1px solid #ffffff40}
+.chips button.off i{opacity:.25}
+h2.out{margin:18px 0 0;padding-top:12px;border-top:1px solid var(--line)}
 </style></head><body><main>
 <header><span class="ttl"><img id="hicon" alt="" hidden><h1 id="title">LoGiX Fixture</h1></span><span class="pills"><a id="upd" class="pill upd" href="#" hidden></a><span id="pill" class="pill">…</span></span></header>
 <div id="banner" class="banner" hidden>Setup mode: choose your Wi&#8209;Fi network below to put this fixture on your network.</div>
 
 <section class="card" id="ctl">
+  <div class="chips" id="chips" hidden></div>
   <div class="top">
     <button id="pw" class="power" title="Power" aria-label="Power">&#x23FB;</button>
     <div class="grow"><div class="hint">Brightness <span id="briv"></span></div><input id="bri" type="range" min="1" max="255"></div>
@@ -65,6 +73,7 @@ code{background:#10131a;padding:1px 5px;border-radius:5px;font-size:12.5px}
   <div class="row"><label>Color</label><input id="col" type="color"><div class="sw grow" id="sw"></div></div>
   <div class="row"><label>Effect</label><select id="fx"></select></div>
   <div class="row"><label>Speed</label><input id="spd" type="range" min="0" max="255"></div>
+  <div class="hint" id="synch" hidden>The outputs are showing different things. Changes made under "All" apply to every output.</div>
   <div class="hint" id="ma"></div>
 </section>
 
@@ -101,9 +110,7 @@ code{background:#10131a;padding:1px 5px;border-radius:5px;font-size:12.5px}
     <div class="row"><label>Model</label><select id="model"></select></div>
     <img id="micon" alt="" hidden>
     <div class="hint" id="mhint" hidden></div>
-    <div class="row"><label>LED data GPIO</label><select id="ledpin"></select></div>
-    <div class="row"><label>LED count</label><input id="ledcount" type="number" min="1" max="800"></div>
-    <div class="row"><label>Color order</label><select id="order"><option>GRB</option><option>RGB</option><option>BRG</option><option>RBG</option><option>GBR</option><option>BGR</option></select></div>
+    <div id="outs"></div>
     <div class="row"><label>IR receiver GPIO</label><select id="irpin"></select></div>
     <div class="row"><label>Power limit (mA)</label><input id="maxma" type="number" min="0" max="20000" step="50"></div>
     <div class="hint" id="mahint">Power limit is the total current budget for the board plus LEDs (0 = no limit). A USB 2.0 port gives about 500&nbsp;mA, a USB charger usually 1000&ndash;2400&nbsp;mA.</div>
@@ -139,7 +146,7 @@ const MODELS=[['custom','Custom / other',0,''],['string','String Lights',0,'/ico
 const model=id=>MODELS.find(m=>m[0]===id)||MODELS[0];
 function showIcon(el,id){const m=model(id);el.hidden=!m[3];if(m[3])el.src=m[3];else el.removeAttribute('src')}
 // WT32-ETH01: Ethernet owns GPIO0/16/18/19/21/22/23/25/26/27; 35/36/39 are input-only (IR only).
-const LEDP32=[[4,'GPIO4 – output 4 (board default)'],[12,'GPIO12 – output 1, must be LOW at boot'],[1,'GPIO1/TX – output 2, disables serial'],[3,'GPIO3/RX – output 3, disables serial'],[2,'GPIO2'],[5,'GPIO5'],[14,'GPIO14'],[15,'GPIO15'],[17,'GPIO17'],[32,'GPIO32'],[33,'GPIO33']];
+const LEDP32=[[4,'GPIO4 – output 4'],[12,'GPIO12 – output 1, must be LOW at boot'],[1,'GPIO1/TX – output 2, disables serial'],[3,'GPIO3/RX – output 3, disables serial'],[2,'GPIO2'],[5,'GPIO5'],[14,'GPIO14'],[15,'GPIO15'],[17,'GPIO17'],[32,'GPIO32'],[33,'GPIO33']];
 const IRP32=[[-1,'Disabled'],[36,'GPIO36 (input only)'],[39,'GPIO39 (input only)'],[35,'GPIO35 (input only)'],[2,'GPIO2'],[4,'GPIO4'],[5,'GPIO5'],[12,'GPIO12'],[14,'GPIO14'],[15,'GPIO15'],[17,'GPIO17'],[32,'GPIO32'],[33,'GPIO33'],[1,'GPIO1/TX – disables serial'],[3,'GPIO3/RX – disables serial']];
 const ETH=()=>I.board==='wt32-eth01';
 const IRP=[[-1,'Disabled'],[4,'GPIO4 – TSOP38238 (board default)'],[5,'GPIO5'],[12,'GPIO12'],[13,'GPIO13'],[14,'GPIO14'],[0,'GPIO0'],[2,'GPIO2'],[3,'GPIO3/RX – disables serial'],[1,'GPIO1/TX – disables serial']];
@@ -160,20 +167,37 @@ function opts(sel,list){sel.innerHTML=list.map(([v,t])=>`<option value="${v}">${
 const host=n=>{let h=n.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,31).replace(/-+$/,'');return h||'logix-fixture'};
 
 // ---- control
-function send(o){Object.assign(pending,o);Object.assign(S,o);paint(true);if(timer)return;
+// T = what the controls edit: 'all' (master power/brightness + every output's color/effect/speed)
+// or an output id (that output's own power/brightness/color/effect/speed).
+let T='all';
+const seg=id=>(S.segments||[]).find(g=>g.id===id);
+function send(o){
+  if(T==='all'){Object.assign(pending,o);Object.assign(S,o);
+    (S.segments||[]).forEach(g=>{if('color'in o)g.hex=o.color;if('effect'in o)g.effect=o.effect;if('speed'in o)g.speed=o.speed})}
+  else{const l=pending.segments=pending.segments||[];let p=l.find(x=>x.id===T);if(!p)l.push(p={id:T});Object.assign(p,o);
+    const g=seg(T);if(g){Object.assign(g,o);if(o.color)g.hex=o.color}if(o.on)S.on=true}
+  paint(true);if(timer)return;
   const wait=Math.max(0,120-(Date.now()-lastSend));
   timer=setTimeout(async()=>{const b=pending;pending={};timer=null;lastSend=Date.now();
     try{S=await post('/api/state',b);paint()}catch(e){}},wait)}
 function paint(local){
-  $('pw').classList.toggle('on',!!S.on);
+  const multi=!!(S.segments&&S.segments.length>1);
+  if(T!=='all'&&!seg(T))T='all';
+  const c=$('chips');c.hidden=!multi;
+  if(multi)c.innerHTML=`<button data-s="all" class="${T==='all'?'act':''}">All</button>`+S.segments.map(g=>
+    `<button data-s="${g.id}" class="${T===g.id?'act':''}${g.on&&S.on?'':' off'}"><i style="background:${g.effect?'conic-gradient(#f44,#fc4,#4f8,#4cf,#a4f,#f44)':g.hex}"></i>${esc(g.name)}</button>`).join('');
+  const v=T==='all'?S:seg(T);
+  $('pw').classList.toggle('on',!!v.on&&!!S.on);
   const a=document.activeElement;
-  if(a!==$('bri'))$('bri').value=S.bri;
-  $('briv').textContent=Math.round(S.bri/2.55)+'%';
-  if(!local&&S.hex&&a!==$('col'))$('col').value=S.hex;
-  if(a!==$('fx'))$('fx').value=S.effect;
-  if(a!==$('spd'))$('spd').value=S.speed;
+  if(a!==$('bri'))$('bri').value=v.bri;
+  $('briv').textContent=Math.round(v.bri/2.55)+'%';
+  if(!local&&v.hex&&a!==$('col'))$('col').value=v.hex;
+  if(a!==$('fx'))$('fx').value=v.effect;
+  if(a!==$('spd'))$('spd').value=v.speed;
+  $('synch').hidden=!(multi&&T==='all'&&S.synced===false);
 }
-$('pw').onclick=()=>send({on:!S.on});
+$('chips').onclick=e=>{const b=e.target.closest('button');if(!b)return;T=b.dataset.s==='all'?'all':+b.dataset.s;paint()};
+$('pw').onclick=()=>{const v=T==='all'?S:seg(T);send({on:!(v.on&&S.on)})};
 $('bri').oninput=e=>send({on:true,bri:+e.target.value});
 $('col').oninput=e=>send({on:true,color:e.target.value});
 $('fx').onchange=e=>send({on:true,effect:+e.target.value});
@@ -199,14 +223,14 @@ function renderHeader(){
   if(e){$('ethst').hidden=false;$('ethst').textContent=e.connected?`Ethernet connected: ${e.ip} (${e.speed} Mbit/s). A Wi‑Fi network saved here is used as a backup when the cable is unplugged.`
     :e.link?'Ethernet: cable connected, waiting for an address…':'Ethernet: no cable. Wi‑Fi is used instead.'}
   $('wcur').textContent=w.ssid?`Saved network: ${w.ssid} (${w.status}${w.connected?', '+w.rssi+' dBm':''})`:'No network saved yet.';
-  const l=I.leds;$('ma').textContent=`${l.count} LEDs on GPIO${l.pin} · ~${l.estimatedMa} mA`+(l.maxMa?` of ${l.maxMa} mA limit`:'')+(l.powerLimited?' · dimmed by power limit':'');
+  const l=I.leds;$('ma').textContent=(l.outputs&&l.outputs.length>1?`${l.count} LEDs on ${l.outputs.length} outputs`:`${l.count} LEDs on GPIO${l.pin}`)+` · ~${l.estimatedMa} mA`+(l.maxMa?` of ${l.maxMa} mA limit`:'')+(l.powerLimited?' · dimmed by power limit':'');
   $('fwver').textContent=I.version;$('fwbuild').textContent='('+I.build+')';
 }
 function renderInfo(){if(!I.wifi)return;const w=I.wifi,s=I.system;
   const rows=[['Name',I.name],['Hostname',I.hostname+'.local'],['Firmware',I.firmware+' '+I.version],['MAC',I.mac],['Chip ID',I.chipId],
    ...(I.eth?[['Ethernet',I.eth.connected?`${I.eth.ip} · ${I.eth.speed} Mbit/s ${I.eth.fullDuplex?'full':'half'} duplex`:I.eth.link?'link up, no address':'no cable'],['Ethernet MAC',I.eth.mac]]:[]),
    ['Wi‑Fi',w.ssid?w.ssid+' – '+w.status:'not configured'],['IP',I.ip||w.ip||'–'],['Signal',w.rssi?w.rssi+' dBm':'–'],
-   ['Setup AP',w.apActive?w.apSsid+' ('+w.apIp+')':'off'],['LEDs',`${I.leds.count} × ${I.leds.colorOrder} on GPIO${I.leds.pin}`],
+   ['Setup AP',w.apActive?w.apSsid+' ('+w.apIp+')':'off'],['LEDs',I.leds.outputs?I.leds.outputs.map(o=>`${o.name}: ${o.count} × ${o.colorOrder} on GPIO${o.pin}`).join('\n'):`${I.leds.count} × ${I.leds.colorOrder} on GPIO${I.leds.pin}`],
    ['IR',I.ir.enabled?`GPIO${I.ir.pin}`+(I.ir.lastCode?` · last code ${I.ir.lastCode}`:''):'disabled'],
    ['Uptime',fmtUp(s.uptimeS)],['Free heap',s.freeHeap+' B'],['Sketch',Math.round(s.sketchSize/1024)+' KB ('+Math.round(s.freeSketchSpace/1024)+' KB free)'],['Last reset',s.resetReason]];
   $('dl').innerHTML=rows.map(([k,v])=>`<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}
@@ -274,12 +298,22 @@ $('dsave').onclick=async()=>{const body={name:$('name').value.trim()};if($('appa
     else msg('dmsg','Saved.','ok')}catch(e){msg('dmsg',e.message,'bad')}};
 
 // ---- hardware
-opts($('ledpin'),LEDP);opts($('irpin'),IRP);opts($('model'),MODELS.map(m=>[m[0],m[1]]));
+opts($('irpin'),IRP);
+// One editor per output; with several outputs each gets a name and can be left unused.
+function outRows(n){const LP=ETH()?LEDP32:LEDP,ORD=['GRB','RGB','BRG','RBG','GBR','BGR'];
+  $('outs').innerHTML=Array.from({length:n},(_,k)=>(n>1?`<h2 class="out">Output ${k+1}</h2><div class="row"><label>Name</label><input id="oname${k}" type="text" maxlength="24" placeholder="Output ${k+1}"></div>`:'')+
+    `<div class="row"><label>LED data GPIO</label><select id="opin${k}"></select></div>
+    <div class="row"><label>LED count</label><input id="ocnt${k}" type="number" min="1" max="800"></div>
+    <div class="row"><label>Color order</label><select id="oord${k}">${ORD.map(o=>`<option>${o}</option>`).join('')}</select></div>`).join('');
+  for(let k=0;k<n;k++)opts($('opin'+k),n>1?[[-1,'Not used'],...LP]:LP)}
+outRows(1);opts($('model'),MODELS.map(m=>[m[0],m[1]]));
 function modelUI(){const m=model($('model').value);showIcon($('micon'),m[0]);
-  $('ledcount').readOnly=!!m[2];if(m[2])$('ledcount').value=m[2];
+  $('ocnt0').readOnly=!!m[2];if(m[2])$('ocnt0').value=m[2];
   $('mhint').hidden=!m[2];$('mhint').textContent=m[2]?`${m[1]}: LED count is fixed at ${m[2]}.`:''}
 $('model').onchange=modelUI;
-$('hsave').onclick=async()=>{const body={fixture:$('model').value,ledPin:+$('ledpin').value,ledCount:+$('ledcount').value,colorOrder:$('order').value,irPin:+$('irpin').value,maxMa:+$('maxma').value};
+$('hsave').onclick=async()=>{const outputs=[];
+  for(let k=0;$('opin'+k);k++){const o={pin:+$('opin'+k).value,count:+$('ocnt'+k).value,order:$('oord'+k).value};if($('oname'+k))o.name=$('oname'+k).value.trim();outputs.push(o)}
+  const body={fixture:$('model').value,outputs,irPin:+$('irpin').value,maxMa:+$('maxma').value};
   try{const r=await post('/api/config',body);msg('hmsg',r.reboot?'Saved. Rebooting…':'Saved.','ok');if(r.reboot)setTimeout(()=>location.reload(),8000)}catch(e){msg('hmsg',e.message,'bad')}};
 
 // ---- firmware
@@ -302,12 +336,15 @@ $('reset').onclick=async()=>{if(!confirm('Erase all settings (Wi‑Fi, name, GPI
 // ---- boot
 (async()=>{
   try{I=await api('/api/info')}catch(e){}
-  if(ETH()){opts($('ledpin'),LEDP32);opts($('irpin'),IRP32);
+  if(ETH()){opts($('irpin'),IRP32);
     $('mahint').textContent='Power limit is the total current budget for the board plus LEDs (0 = no limit). Set it to what your LED power supply can deliver.';
     $('fwhint').innerHTML='Use a <code>-eth01.bin</code> release file or <code>.pio/build/eth01/firmware.bin</code> from a PlatformIO build. Settings are kept.'}
   try{const fx=await api('/api/effects');$('fx').innerHTML=fx.map(e=>`<option value="${e.id}">${e.name}</option>`).join('')}catch(e){}
   try{C=await api('/api/config');$('name').value=C.name;$('name').oninput();$('ssid').value=C.ssid;
-    $('ledpin').value=C.ledPin;$('ledcount').value=C.ledCount;$('order').value=C.colorOrder;$('irpin').value=C.irPin;$('maxma').value=C.maxMa;
+    outRows(C.maxOutputs||1);
+    (C.outputs||[{pin:C.ledPin,count:C.ledCount,order:C.colorOrder}]).forEach((o,k)=>{if(!$('opin'+k))return;
+      $('opin'+k).value=o.pin;$('ocnt'+k).value=o.count;$('oord'+k).value=o.order;if($('oname'+k))$('oname'+k).value=o.name||''});
+    $('irpin').value=C.irPin;$('maxma').value=C.maxMa;
     $('model').value=C.fixture||'custom';modelUI();
     if(C.hasApPass)$('appass').placeholder='(unchanged)';}catch(e){}
   await refresh();

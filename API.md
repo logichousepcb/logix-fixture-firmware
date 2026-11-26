@@ -46,23 +46,41 @@ over USB serial (115200).
 
 ## Light state
 
+The fixture has one or more **outputs** (strips on their own GPIO): one on the ESP8266 board, up to
+four on the WT32-ETH01. Each output has its own on/off, brightness, color, effect and speed. On top of
+that, `on` and `bri` at the top level are the master power and brightness for the whole fixture
+(an output's brightness is scaled by the master brightness).
+
 ### `GET /api/state`
 
 ```json
 {
-  "on": true,
-  "bri": 128,
-  "color": [255, 147, 41],
-  "hex": "#ff9329",
+  "on": true,                 // master power
+  "bri": 128,                 // master brightness
+  "color": [255, 0, 0],       // color / effect / speed of the first output
+  "hex": "#ff0000",
   "effect": 0,
   "effectName": "Solid",
-  "speed": 128
+  "speed": 128,
+  "synced": false,            // true when every output shows the same thing
+  "segments": [               // one entry per used output
+    {"id": 0, "name": "Porch", "on": true, "bri": 255, "color": [255,0,0], "hex": "#ff0000",
+     "effect": 0, "effectName": "Solid", "speed": 128},
+    {"id": 3, "name": "Output 4", "on": true, "bri": 255, "color": [255,147,41], "hex": "#ff9329",
+     "effect": 3, "effectName": "Rainbow Cycle", "speed": 150}
+  ]
 }
 ```
+
+Apps that treat the fixture as a single light can ignore `segments`: the top-level fields work as
+before, and setting them changes every output. `synced` ignores color for effects that don't use it
+(Rainbow, Christmas, team colors, ...).
 
 ### `POST /api/state`
 
 Send only the fields you want to change. The response is the full new state.
+
+**All outputs** (top-level fields):
 
 | Field | Type | Notes |
 | --- | --- | --- |
@@ -73,11 +91,30 @@ Send only the fields you want to change. The response is the full new state.
 | `effect` | id (0–15) or name (case-insensitive) | See `/api/effects` |
 | `speed` | 0–255 | Effect speed |
 
+Setting `effect` or `speed` for all outputs also lines up their animations, so outputs running the
+same effect move in step.
+
+**One output**: add `"seg": <id>` and the same fields (`on` and `bri` then mean that output's own
+power and brightness), or send several at once in `segments`:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `seg` | output id | The other fields go to this output only |
+| `segments` | `[{"id": 0, ...}, ...]` | Each entry: `id` plus any of `on`, `bri`, `color`, `r`/`g`/`b`, `effect`, `speed` |
+
+Switching an output on also switches the master on. Unknown ids are rejected with
+`unknown output (seg / segments id)`, and nothing is changed if any field is invalid.
+
 Changing color, brightness, or effect does **not** turn the light on. Include `"on": true` if you want that.
 
 ```bash
 curl -X POST -H "Content-Type: application/json" \
      -d '{"on":true,"bri":200,"color":"#00a0ff","effect":"Breathe"}' \
+     http://fixture.local/api/state
+
+# different things on different outputs
+curl -X POST -H "Content-Type: application/json" \
+     -d '{"on":true,"segments":[{"id":0,"color":"#ff0000","effect":0},{"id":1,"effect":"Christmas"},{"id":3,"on":false}]}' \
      http://fixture.local/api/state
 ```
 
@@ -90,6 +127,8 @@ Same fields as query parameters. Handy for buttons, browsers, and simple automat
 /api/set?on=1&bri=255&color=ff0000
 /api/set?effect=rainbow%20cycle&speed=60
 /api/set?r=0&g=255&b=0
+/api/set?seg=2&effect=comet          (output 3 only)
+/api/set?seg=0&on=toggle             (output 1 on/off)
 ```
 
 ### `GET /api/effects`
@@ -129,28 +168,36 @@ Full response:
   "auth": false,
   "wsPort": 81,
   "fixture": "snowflake91",
+  "board": "esp12",              // "esp12" | "wt32-eth01"
   "hostname": "molly-s-tree",
   "build": "Nov 22 2026 10:15:02",
   "mac": "48:E7:29:71:F3:14",
   "chipId": "71F314",
+  "ip": "192.168.1.50",          // home-network address (Ethernet preferred), when online
   "capabilities": { "rgb": true, "white": false, "effects": 10, "speed": true, "ir": true,
-                    "identify": true, "websocket": true, "maxLeds": 800, "ota": true },
+                    "identify": true, "websocket": true, "maxLeds": 800, "ota": true,
+                    "ethernet": false, "outputs": 1 },   // outputs = how many the board supports
   "wifi": {
-    "mode": "sta",               // "ap" | "sta" | "ap+sta"
+    "mode": "sta",               // "ap" | "sta" | "ap+sta" | "off" (Ethernet carrying traffic)
     "ssid": "HomeNet",
     "status": "connected",       // "not configured" | "connecting" | "connected" |
-                                 // "wrong password" | "network not found" | "connection failed" | "idle"
+                                 // "wrong password" | "network not found" | "connection failed" | "idle" |
+                                 // "standby (Ethernet connected)"
     "connected": true,
     "ip": "192.168.1.50",        // only when connected
     "rssi": -58,                 // only when connected
     "apActive": false,
     "apSsid": "…", "apIp": "192.168.4.1"   // only while the setup AP is up
   },
-  "leds": { "pin": 2, "count": 30, "colorOrder": "GRB",
+  "eth": { "link": true, "connected": true, "ip": "192.168.1.60",   // WT32-ETH01 only
+           "speed": 100, "fullDuplex": true, "mac": "C8:F0:9E:DE:20:D3" },
+  "leds": { "pin": 2, "count": 30, "colorOrder": "GRB",   // pin/colorOrder: first output; count: all
+            "outputs": [{"id": 0, "name": "Output 1", "pin": 2, "count": 30, "colorOrder": "GRB"}],
             "estimatedMa": 312, "maxMa": 500, "powerLimited": false },
   "ir":   { "pin": 4, "enabled": true, "lastCode": "0xF720DF", "lastAgeMs": 5120 },
   "system": { "uptimeS": 3600, "freeHeap": 38000, "sketchSize": 433000,
               "freeSketchSpace": 610000, "flashSize": 4194304, "resetReason": "Power On" }
+              // ESP32 also lists "partitions": [{label, type, subtype, offset, size}, ...]
 }
 ```
 
@@ -168,7 +215,7 @@ Blinks all LEDs white 6 times over 3 seconds (even when the light is off), then 
 **Server → client**
 
 ```json
-{"type":"state","state":{"on":true,"bri":128,"color":[255,147,41],"hex":"#ff9329","effect":9,"effectName":"Christmas","speed":128}}
+{"type":"state","state":{"on":true,"bri":128,"color":[255,147,41],"hex":"#ff9329","effect":9,"effectName":"Christmas","speed":128,"synced":true,"segments":[...]}}
 {"type":"error","error":"bri must be 0-255"}
 ```
 
@@ -196,7 +243,10 @@ client only. With a bad token, the server sends an `error` and closes the connec
 ```json
 { "name": "LoGiX Fixture 3A4F", "hostname": "logix-fixture-3a4f",
   "ssid": "HomeNet", "hasPass": true, "hasApPass": false,
-  "ledPin": 2, "ledCount": 30, "colorOrder": "GRB", "irPin": 4, "maxMa": 500, "fixture": "custom",
+  "ledPin": 2, "ledCount": 30, "colorOrder": "GRB",   // output 1
+  "maxOutputs": 1, "maxLeds": 800,
+  "outputs": [{"pin": 2, "count": 30, "order": "GRB", "name": ""}],   // maxOutputs entries; pin -1 = not used
+  "irPin": 4, "maxMa": 500, "fixture": "custom",
   "setupSsid": "LoGiX-Setup-F314", "apiToken": "" }
 ```
 
@@ -208,12 +258,13 @@ Send any subset of fields. All of them are validated before anything is saved.
 | --- | --- | --- |
 | `name` | 1–32 chars. Hostname = lowercase, non-alphanumerics → `-` | reboot |
 | `apPass` | `""` (open) or 8–63 chars | next time the AP starts |
-| `ledPin` | 0, 1, 2, 3, 4, 5, 12, 13, 14, 15 | reboot |
-| `ledCount` | 1–800 | reboot |
-| `colorOrder` | `RGB` `RBG` `GRB` `GBR` `BRG` `BGR` | immediately |
-| `irPin` | -1 (off), 0–5, 12–14 | reboot |
+| `outputs` | Array of up to `maxOutputs` entries `{pin, count, order, name}`; any field can be left out. `pin` -1 = output not used; `name` up to 24 chars. At least one output needs a pin, pins must differ, total LEDs ≤ 800 | reboot when a pin or count changes; order and name immediately |
+| `ledPin` | Output 1's pin. ESP8266: 0, 1, 2, 3, 4, 5, 12, 13, 14, 15. WT32-ETH01: 1, 2, 3, 4, 5, 12, 14, 15, 17, 32, 33 | reboot |
+| `ledCount` | Output 1's LED count, 1–800 | reboot |
+| `colorOrder` | Output 1's order: `RGB` `RBG` `GRB` `GBR` `BRG` `BGR` | immediately |
+| `irPin` | -1 (off). ESP8266: 0–5, 12–14. WT32-ETH01: an LED pin or 35, 36, 39 | reboot |
 | `maxMa` | 0 (no limit) or 100–20000 | immediately |
-| `fixture` | `custom`, `string` (String Lights), `snowflake91` (91 Pixel Snowflake; forces `ledCount` 91). Icon at `/icon/<fixture>.webp` | immediately (reboot if the LED count changes) |
+| `fixture` | `custom`, `string` (String Lights), `snowflake91` (91 Pixel Snowflake; forces output 1's count to 91). Icon at `/icon/<fixture>.webp` | immediately (reboot if the LED count changes) |
 | `apiToken` | `"generate"` (random 24-hex), a 16–64 char `[A-Za-z0-9_-]` string, or `""` (off) | immediately; reboots when turning auth on/off (mDNS `auth` flag) |
 
 Response: `{"ok":true}`, or `{"ok":true,"reboot":true}` when the device is about to restart (about 1.5 s).
@@ -222,6 +273,11 @@ When the token changes, the response includes the new `apiToken`.
 ```bash
 curl -X POST -H "Content-Type: application/json" \
      -d '{"name":"Kitchen Shelf","ledCount":60,"maxMa":1500}' http://fixture.local/api/config
+
+# WT32-ETH01: four outputs
+curl -X POST -H "Content-Type: application/json" \
+     -d '{"outputs":[{"pin":12,"count":126,"order":"BRG","name":"Porch"},{"pin":1,"count":125},{"pin":3,"count":125},{"pin":4,"count":125}]}' \
+     http://fixture.local/api/config
 ```
 
 ---

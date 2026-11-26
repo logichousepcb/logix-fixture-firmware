@@ -6,12 +6,12 @@
 #include "platform.h"
 
 // ---------------------------------------------------------------------------
-// Driver: pick the best NeoPixelBus method for the configured pin at runtime.
-// ESP8266:
+// Driver: pick the best NeoPixelBus method for each output's pin at runtime.
+// ESP8266 (one output):
 //   GPIO2 -> UART1 hardware (doesn't block interrupts, so IR + WiFi stay happy)
 //   GPIO3 -> I2S DMA (RX pin)
 //   other -> bit-bang
-// ESP32: RMT hardware on any output pin (non-blocking; one RMT channel per strip)
+// ESP32: RMT hardware, one channel per output (non-blocking, all four send at once).
 // Bytes are always sent raw (NeoRgbFeature); color order is applied by us.
 // ---------------------------------------------------------------------------
 class LedDriver {
@@ -35,6 +35,20 @@ class NpbDriver : public LedDriver {
  private:
   NeoPixelBus<NeoRgbFeature, METHOD> bus;
 };
+
+#if defined(ESP32)
+class RmtDriver : public LedDriver {
+ public:
+  RmtDriver(uint16_t n, uint8_t pin, uint8_t channel) : bus(n, pin, (NeoBusChannel)channel) {}
+  void begin() override { bus.Begin(); }
+  void set(uint16_t i, uint8_t a, uint8_t b, uint8_t c) override { bus.SetPixelColor(i, RgbColor(a, b, c)); }
+  void show() override { bus.Show(); }
+  bool canShow() override { return bus.CanShow(); }
+
+ private:
+  NeoPixelBus<NeoRgbFeature, NeoEsp32RmtNWs2812xMethod> bus;
+};
+#endif
 
 const char *const EFFECT_NAMES[] = {"Solid",         "Breathe",       "Rainbow", "Rainbow Cycle",
                                     "Color Wipe",    "Theater Chase", "Twinkle", "Comet",
@@ -78,43 +92,78 @@ static const uint8_t VALENTINE_N = sizeof(VALENTINE) / sizeof(VALENTINE[0]);
 static const uint8_t XMAS_N = sizeof(XMAS) / sizeof(XMAS[0]);
 const uint8_t EFFECT_COUNT = sizeof(EFFECT_NAMES) / sizeof(EFFECT_NAMES[0]);
 
+// Solid, Breathe, Color Wipe, Theater Chase, Twinkle, Comet and Candle draw with the chosen color.
+bool effectUsesColor(uint8_t e) { return e <= 1 || (e >= 4 && e <= 8); }
+
 static const uint32_t FRAME_MS = 20;      // 50 fps
 static const float FADE_MS = 400.0f;      // on/off & brightness transition
 static const uint8_t MA_PER_CHANNEL = 20; // WS2812 per color at full duty
 
-static LedDriver *drv = nullptr;
-static uint8_t *frame = nullptr;  // effect output, RGB, full brightness
-static uint16_t n = 0;
-static uint8_t order[3] = {1, 0, 2};
-static bool dirty = true;
+// Per-output runtime: driver, slice of the frame buffer, fade and effect timers.
+struct SegRt {
+  bool used = false;
+  LedDriver *drv = nullptr;
+  uint16_t start = 0, len = 0;  // slice of fb
+  uint8_t order[3] = {1, 0, 2};
+  float dispBri = 0;            // current (fading) brightness, master x output
+  bool dirty = true;
+  uint8_t lastEffect = 255;
+  uint32_t phase = 0;
+  uint16_t lastHead = 0;
+  uint32_t twinkleAcc = 0;
+  int16_t candleLevel = 200, candleTarget = 200;
+  uint32_t candleNext = 0;
+};
+
+static SegRt segs[MAX_OUTPUTS];
+static uint8_t *fb = nullptr;  // all outputs back to back, RGB at full brightness
+static uint16_t total = 0;
 static bool paused = false;
 static uint32_t lastFrame = 0;
-static uint32_t phase = 0;
-static float dispBri = 0;
 static uint16_t estMa = 0;
 static bool limited = false;
-static uint8_t lastEffect = 255;
-static uint16_t lastHead = 0;
-static uint32_t twinkleAcc = 0;
-static int16_t candleLevel = 200, candleTarget = 200;
-static uint32_t candleNext = 0;
-
 static uint32_t identifyUntil = 0;
 
+// The output being rendered: its pixels, LED count, settings and timers.
+static uint8_t *frame = nullptr;
+static uint16_t n = 0;
+static const Seg *sg = nullptr;
+static SegRt *rt = nullptr;
+
 void stateChanged() {
-  dirty = true;
+  for (auto &s : segs) s.dirty = true;
   stateVersion++;
   stateMarkDirty();
 }
 
 void ledsIdentify() { identifyUntil = millis() + 3000; }
 
-void ledsSetOrder(const String &o) {
+static void parseOrder(const String &o, uint8_t *ord) {
   for (int k = 0; k < 3; k++) {
     char c = o[k];
-    order[k] = c == 'R' ? 0 : (c == 'G' ? 1 : 2);
+    ord[k] = c == 'R' ? 0 : (c == 'G' ? 1 : 2);
   }
-  dirty = true;
+}
+
+void ledsUpdateOrders() {
+  for (uint8_t k = 0; k < MAX_OUTPUTS; k++) {
+    if (!segs[k].used) continue;
+    parseOrder(cfg.out[k].order, segs[k].order);
+    segs[k].dirty = true;
+  }
+}
+
+// Outputs keep their own animation clock (each can run its own speed). When the same
+// effect/speed is set for all of them, give every output the first one's clock so they
+// move in step; the first output carries on without a jump.
+void ledsSync() {
+  const SegRt &ref = segs[firstOutput()];
+  for (auto &s : segs) {
+    if (!s.used || &s == &ref) continue;
+    s.phase = ref.phase;
+    s.lastHead = ref.lastHead;
+    s.twinkleAcc = ref.twinkleAcc;
+  }
 }
 
 void ledsPause(bool p) { paused = p; }
@@ -122,26 +171,39 @@ uint16_t ledsEstimatedMa() { return estMa; }
 bool ledsPowerLimited() { return limited; }
 
 void ledsBegin() {
-  n = cfg.ledCount;
-  frame = new uint8_t[n * 3]();
-  uint8_t pin = cfg.ledPin;
+  total = totalLeds();
+  fb = new uint8_t[(total ? total : 1) * 3]();
+  uint16_t at = 0;
+  uint8_t channel = 0;
+  for (uint8_t k = 0; k < MAX_OUTPUTS; k++) {
+    SegRt &s = segs[k];
+    s = SegRt();
+    if (!outputUsed(k)) continue;
+    s.used = true;
+    s.start = at;
+    s.len = cfg.out[k].count;
+    at += s.len;
+    uint8_t pin = cfg.out[k].pin;
 #if defined(ESP32)
-  drv = new NpbDriver<NeoEsp32Rmt0Ws2812xMethod>(n, pin);
-  const char *method = "RMT0";
+    s.drv = new RmtDriver(s.len, pin, channel);
+    const char *method = "RMT";
 #else
-  if (pin == 2)
-    drv = new NpbDriver<NeoEsp8266Uart1Ws2812xMethod>(n, pin);
-  else if (pin == 3)
-    drv = new NpbDriver<NeoEsp8266DmaWs2812xMethod>(n, pin);
-  else
-    drv = new NpbDriver<NeoEsp8266BitBangWs2812xMethod>(n, pin);
-  const char *method = pin == 2 ? "UART1" : pin == 3 ? "DMA" : "bit-bang";
+    if (pin == 2)
+      s.drv = new NpbDriver<NeoEsp8266Uart1Ws2812xMethod>(s.len, pin);
+    else if (pin == 3)
+      s.drv = new NpbDriver<NeoEsp8266DmaWs2812xMethod>(s.len, pin);
+    else
+      s.drv = new NpbDriver<NeoEsp8266BitBangWs2812xMethod>(s.len, pin);
+    const char *method = pin == 2 ? "UART1" : pin == 3 ? "DMA" : "bit-bang";
 #endif
-  drv->begin();
-  ledsSetOrder(cfg.colorOrder);
-  dispBri = 0;  // fade in on boot
-  drv->show();
-  Serial.printf("[led] %u LEDs on GPIO%u (%s)\n", n, pin, method);
+    s.drv->begin();
+    parseOrder(cfg.out[k].order, s.order);
+    s.dispBri = 0;  // fade in on boot
+    s.drv->show();
+    Serial.printf("[led] output %u: %u LEDs on GPIO%u (%s %u, %s)\n", k + 1, s.len, pin, method, channel,
+                  cfg.out[k].order.c_str());
+    channel++;
+  }
 }
 
 // --------------------------------------------------------------------------- helpers
@@ -196,7 +258,7 @@ static void blendPalette(const uint8_t (*colors)[3], uint8_t count, uint16_t pos
 // Repeating pairs of colors (AA BB CC AA BB CC ...). The moving versions slowly march along the
 // strip (speed 128 ~ 2 LEDs/s; speed 0 holds still); the "Solid" versions never move.
 static void pairs(const uint8_t (*colors)[3], uint8_t count, uint32_t p, bool moving) {
-  const uint32_t shift = (moving && state.speed) ? p / 16 : 0;
+  const uint32_t shift = (moving && sg->speed) ? p / 16 : 0;
   const uint32_t period = (uint32_t)count * 2;
   for (uint16_t i = 0; i < n; i++) {
     const uint8_t *c = colors[((i + period - shift % period) % period) / 2];
@@ -205,19 +267,20 @@ static void pairs(const uint8_t (*colors)[3], uint8_t count, uint32_t p, bool mo
 }
 
 // --------------------------------------------------------------------------- effects
+// Renders one output: frame/n/sg/rt point at it (see ledsLoop).
 static void render(uint32_t dt) {
-  const uint8_t R = state.r, G = state.g, B = state.b;
-  if (state.effect != lastEffect) {
+  const uint8_t R = sg->r, G = sg->g, B = sg->b;
+  if (sg->effect != rt->lastEffect) {
     memset(frame, 0, n * 3);
-    lastEffect = state.effect;
-    phase = 0;
-    lastHead = 0;
+    rt->lastEffect = sg->effect;
+    rt->phase = 0;
+    rt->lastHead = 0;
   }
-  // phase advances proportional to speed; p wraps cleanly every 256 units
-  phase += dt * (state.speed + 8);
-  const uint32_t p = phase >> 12;  // speed 128 ≈ 33 units/s
+  // the phase advances proportional to speed; p wraps cleanly every 256 units
+  rt->phase += dt * (sg->speed + 8);
+  const uint32_t p = rt->phase >> 12;  // speed 128 ≈ 33 units/s
 
-  switch (state.effect) {
+  switch (sg->effect) {
     default:
     case 0:  // Solid
       for (uint16_t i = 0; i < n; i++) px(i, R, G, B);
@@ -264,9 +327,9 @@ static void render(uint32_t dt) {
 
     case 6:  // Twinkle
       fadeAll(245);
-      twinkleAcc += dt * n * (state.speed + 16);
-      while (twinkleAcc >= 400000) {
-        twinkleAcc -= 400000;
+      rt->twinkleAcc += dt * n * (sg->speed + 16);
+      while (rt->twinkleAcc >= 400000) {
+        rt->twinkleAcc -= 400000;
         px(random(n), R, G, B);
       }
       break;
@@ -274,25 +337,25 @@ static void render(uint32_t dt) {
     case 7: {  // Comet
       fadeAll(200);
       uint16_t head = (p * n / 64) % n;
-      uint16_t i = lastHead;
+      uint16_t i = rt->lastHead;
       for (uint16_t guard = 0; guard < n; guard++) {  // fill skipped pixels at high speed
         px(i, R, G, B);
         if (i == head) break;
         i = (i + 1) % n;
       }
-      lastHead = head;
+      rt->lastHead = head;
       break;
     }
 
     case 8: {  // Candle flicker
       uint32_t now = millis();
-      if ((int32_t)(now - candleNext) >= 0) {
-        candleTarget = random(110, 256);
-        candleNext = now + random(40, 40 + (256 - state.speed) * 2);
+      if ((int32_t)(now - rt->candleNext) >= 0) {
+        rt->candleTarget = random(110, 256);
+        rt->candleNext = now + random(40, 40 + (256 - sg->speed) * 2);
       }
-      candleLevel += (candleTarget - candleLevel) / 3;
+      rt->candleLevel += (rt->candleTarget - rt->candleLevel) / 3;
       for (uint16_t i = 0; i < n; i++) {
-        int lvl = candleLevel - (int)random(0, 20);
+        int lvl = rt->candleLevel - (int)random(0, 20);
         if (lvl < 0) lvl = 0;
         px(i, scale8(R, lvl), scale8(G, lvl), scale8(B, lvl));
       }
@@ -303,8 +366,8 @@ static void render(uint32_t dt) {
       for (uint16_t i = 0; i < n; i++) {
         const uint8_t *c = XMAS[i % XMAS_N];
         uint8_t lvl = 255;
-        if (state.speed > 0) {
-          // every bulb gets its own phase and slightly different rate
+        if (sg->speed > 0) {
+          // every bulb gets its own rt->phase and slightly different rate
           uint8_t rate = 2 + (hash8(i, 1) & 3);
           uint8_t s = sin8((uint8_t)(p * rate / 2 + hash8(i, 2)));
           lvl = 150 + scale8(s, 105);  // 150..255: dims gently, never goes dark
@@ -329,7 +392,7 @@ static void render(uint32_t dt) {
         blendPalette(FROST, FROST_N, pos, r, g, bl);
         // each pixel glints white briefly at its own random moment
         uint8_t s = sin8((uint8_t)(p * (3 + (hash8(i, 3) & 3)) / 2 + hash8(i, 4)));
-        if (s > 248 && state.speed > 0) {
+        if (s > 248 && sg->speed > 0) {
           uint8_t w = (s - 248) * 34;  // 0..238, a short flash near the peak
           r += scale8(255 - r, w);
           g += scale8(255 - g, w);
@@ -344,8 +407,8 @@ static void render(uint32_t dt) {
       // Heartbeat: a strong beat then a softer one ("lub-dub"), then rest. ~1.2 s per beat at
       // speed 128; speed 0 holds still with no pulse.
       uint8_t lvl = 255;
-      if (state.speed > 0) {
-        const uint32_t q = (phase >> 8) % 640;  // 16 sub-steps per p unit
+      if (sg->speed > 0) {
+        const uint32_t q = (rt->phase >> 8) % 640;  // 16 sub-steps per p unit
         auto bump = [](int32_t x, int32_t center, int32_t width, int32_t height) -> int32_t {
           int32_t d = x > center ? x - center : center - x;
           return d >= width ? 0 : height * (width - d) / width;
@@ -364,65 +427,90 @@ static void render(uint32_t dt) {
   }
 }
 
-// Apply brightness, USB current limit and color order, then push to the strip.
-static void output() {
-  uint8_t bri = (uint8_t)(dispBri + 0.5f);
-  uint32_t sum = 0;
-  for (uint16_t i = 0; i < n * 3; i++) sum += frame[i];
-  // mA drawn by LEDs at this brightness (sum <= 800*3*255, fits easily)
-  uint32_t ledMa = (sum * bri / 255) * MA_PER_CHANNEL / 255;
-  uint8_t eff = bri;
+// Apply brightness, the current limit and color order, then push every output.
+// forceBri >= 0 overrides each output's brightness (identify blink).
+static void output(int16_t forceBri = -1) {
+  uint8_t bri[MAX_OUTPUTS] = {0};
+  uint32_t ledMa = 0;  // mA drawn by the LEDs at their brightness
+  for (uint8_t k = 0; k < MAX_OUTPUTS; k++) {
+    const SegRt &s = segs[k];
+    if (!s.used) continue;
+    bri[k] = forceBri >= 0 ? forceBri : (uint8_t)(s.dispBri + 0.5f);
+    uint32_t sum = 0;  // <= 800*3*255, fits easily
+    const uint8_t *p = fb + s.start * 3;
+    for (uint16_t i = 0; i < s.len * 3; i++) sum += p[i];
+    ledMa += (sum * bri[k] / 255) * MA_PER_CHANNEL / 255;
+  }
+  // One budget for the whole board: when it's exceeded every output dims by the same factor.
+  uint32_t budget = 0;
   limited = false;
   if (cfg.maxMa > 0) {
-    int32_t budget = (int32_t)cfg.maxMa - BOARD_MA - n;  // ~1 mA idle per LED
-    if (budget < 20) budget = 20;
-    if (ledMa > (uint32_t)budget) {
-      eff = (uint8_t)((uint32_t)bri * budget / ledMa);
-      ledMa = budget;
+    int32_t b = (int32_t)cfg.maxMa - BOARD_MA - total;  // ~1 mA idle per LED
+    if (b < 20) b = 20;
+    if (ledMa > (uint32_t)b) {
+      budget = b;
       limited = true;
     }
   }
-  estMa = BOARD_MA + n + ledMa;
 
-  for (uint16_t i = 0; i < n; i++) {
-    const uint8_t *p = frame + i * 3;
-    uint8_t v[3] = {scale8(p[0], eff), scale8(p[1], eff), scale8(p[2], eff)};
-    if (eff == 0) v[0] = v[1] = v[2] = 0;
-    drv->set(i, v[order[0]], v[order[1]], v[order[2]]);
+  for (uint8_t k = 0; k < MAX_OUTPUTS; k++) {
+    SegRt &s = segs[k];
+    if (!s.used) continue;
+    uint8_t eff = limited ? (uint8_t)((uint32_t)bri[k] * budget / ledMa) : bri[k];
+    const uint8_t *p = fb + s.start * 3;
+    for (uint16_t i = 0; i < s.len; i++, p += 3) {
+      uint8_t v[3] = {scale8(p[0], eff), scale8(p[1], eff), scale8(p[2], eff)};
+      if (eff == 0) v[0] = v[1] = v[2] = 0;
+      s.drv->set(i, v[s.order[0]], v[s.order[1]], v[s.order[2]]);
+    }
+    s.drv->show();
   }
-  drv->show();
+  if (limited) ledMa = budget;
+  estMa = BOARD_MA + total + ledMa;
 }
 
 void ledsLoop() {
-  if (paused || !drv) return;
+  if (paused || !total) return;
   uint32_t now = millis();
   uint32_t dt = now - lastFrame;
-  if (dt < FRAME_MS || !drv->canShow()) return;
+  if (dt < FRAME_MS) return;
+  for (auto &s : segs)
+    if (s.used && !s.drv->canShow()) return;
   lastFrame = now;
   if (dt > 100) dt = 100;
 
   // Identify: blink white 6x over 3 s regardless of on/off, then restore.
   if ((int32_t)(identifyUntil - now) > 0) {
     bool lit = ((identifyUntil - now) / 250) % 2 == 0;
-    memset(frame, lit ? 255 : 0, n * 3);
-    float saved = dispBri;
-    dispBri = 160;
-    output();  // still goes through the power limiter
-    dispBri = saved;
-    lastEffect = 255;  // effect buffers were overwritten; restart cleanly
-    dirty = true;
+    memset(fb, lit ? 255 : 0, total * 3);
+    output(160);  // still goes through the power limiter
+    for (auto &s : segs) {
+      s.lastEffect = 255;  // effect buffers were overwritten; restart cleanly (and in step)
+      s.dirty = true;
+    }
     return;
   }
 
-  float target = state.on ? state.bri : 0;
-  bool fading = dispBri != target;
-  if (fading) {
-    float step = dt * 255.0f / FADE_MS;
-    dispBri = dispBri < target ? min(target, dispBri + step) : max(target, dispBri - step);
+  bool changed = false;
+  for (uint8_t k = 0; k < MAX_OUTPUTS; k++) {
+    SegRt &s = segs[k];
+    if (!s.used) continue;
+    const Seg &st = state.seg[k];
+    float target = (state.on && st.on) ? state.bri * st.bri / 255.0f : 0;
+    bool fading = s.dispBri != target;
+    if (fading) {
+      float step = dt * 255.0f / FADE_MS;
+      s.dispBri = s.dispBri < target ? min(target, s.dispBri + step) : max(target, s.dispBri - step);
+    }
+    bool animated = st.effect != 0;
+    if (!(fading || s.dirty || (animated && s.dispBri > 0))) continue;
+    s.dirty = false;
+    frame = fb + s.start * 3;
+    n = s.len;
+    sg = &st;
+    rt = &s;
+    render(dt);
+    changed = true;
   }
-  bool animated = state.effect != 0;
-  if (!(fading || dirty || (animated && dispBri > 0))) return;
-  dirty = false;
-  render(dt);
-  output();
+  if (changed) output();
 }

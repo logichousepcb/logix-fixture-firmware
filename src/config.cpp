@@ -2,6 +2,8 @@
 
 #include <ArduinoJson.h>
 
+#include "leds.h"
+
 Config cfg;
 State state;
 uint32_t stateVersion = 0;
@@ -89,6 +91,23 @@ bool validIrPin(int p) {
 }
 #endif
 
+bool outputUsed(uint8_t k) { return k < MAX_OUTPUTS && cfg.out[k].pin >= 0 && cfg.out[k].count > 0; }
+
+uint8_t firstOutput() {
+  for (uint8_t k = 0; k < MAX_OUTPUTS; k++)
+    if (outputUsed(k)) return k;
+  return 0;
+}
+
+uint16_t totalLeds() {
+  uint16_t t = 0;
+  for (uint8_t k = 0; k < MAX_OUTPUTS; k++)
+    if (outputUsed(k)) t += cfg.out[k].count;
+  return t;
+}
+
+String outputName(uint8_t k) { return cfg.out[k].name.length() ? cfg.out[k].name : String("Output ") + (k + 1); }
+
 bool validColorOrder(const String &o) {
   return o == "RGB" || o == "RBG" || o == "GRB" || o == "GBR" || o == "BRG" || o == "BGR";
 }
@@ -112,16 +131,43 @@ static void loadConfig() {
   if (d["ssid"].is<const char *>()) cfg.ssid = d["ssid"].as<const char *>();
   if (d["pass"].is<const char *>()) cfg.pass = d["pass"].as<const char *>();
   if (d["apPass"].is<const char *>()) cfg.apPass = d["apPass"].as<const char *>();
-  if (d["ledPin"].is<int>() && validLedPin(d["ledPin"])) cfg.ledPin = d["ledPin"];
-  if (d["ledCount"].is<int>()) cfg.ledCount = constrain(d["ledCount"].as<int>(), 1, MAX_LEDS);
-  if (d["colorOrder"].is<const char *>() && validColorOrder(d["colorOrder"].as<String>()))
-    cfg.colorOrder = d["colorOrder"].as<const char *>();
+  JsonArrayConst outs = d["outputs"];
+  if (outs) {
+    for (uint8_t k = 0; k < MAX_OUTPUTS; k++) {
+      Output &o = cfg.out[k];
+      JsonObjectConst j = outs[k];
+      if (!j) {
+        o.pin = -1;
+        continue;
+      }
+      o.pin = j["pin"].is<int>() && validLedPin(j["pin"]) ? j["pin"].as<int>() : -1;
+      if (j["count"].is<int>()) o.count = constrain(j["count"].as<int>(), 1, MAX_LEDS);
+      if (j["order"].is<const char *>() && validColorOrder(j["order"].as<String>())) o.order = j["order"].as<const char *>();
+      if (j["name"].is<const char *>()) o.name = j["name"].as<const char *>();
+    }
+  } else {  // config from before multiple outputs: one strip
+    for (uint8_t k = 1; k < MAX_OUTPUTS; k++) cfg.out[k].pin = -1;
+    Output &o = cfg.out[0];
+    if (d["ledPin"].is<int>() && validLedPin(d["ledPin"])) o.pin = d["ledPin"];
+    if (d["ledCount"].is<int>()) o.count = constrain(d["ledCount"].as<int>(), 1, MAX_LEDS);
+    if (d["colorOrder"].is<const char *>() && validColorOrder(d["colorOrder"].as<String>()))
+      o.order = d["colorOrder"].as<const char *>();
+  }
   if (d["irPin"].is<int>() && validIrPin(d["irPin"])) cfg.irPin = d["irPin"];
   if (d["maxMa"].is<int>()) cfg.maxMa = d["maxMa"];
   if (d["apiToken"].is<const char *>()) cfg.apiToken = d["apiToken"].as<const char *>();
   if (d["fixture"].is<const char *>() && validFixture(d["fixture"].as<String>()))
     cfg.fixture = d["fixture"].as<const char *>();
-  if (cfg.irPin == cfg.ledPin) cfg.irPin = -1;
+  // Drop outputs that clash with an earlier one or don't fit in MAX_LEDS; IR loses to LEDs.
+  uint16_t total = 0;
+  for (uint8_t k = 0; k < MAX_OUTPUTS; k++) {
+    if (!outputUsed(k)) continue;
+    for (uint8_t j = 0; j < k; j++)
+      if (outputUsed(j) && cfg.out[j].pin == cfg.out[k].pin) cfg.out[k].pin = -1;
+    if (outputUsed(k) && total + cfg.out[k].count > MAX_LEDS) cfg.out[k].pin = -1;
+    if (outputUsed(k)) total += cfg.out[k].count;
+    if (outputUsed(k) && cfg.irPin == cfg.out[k].pin) cfg.irPin = -1;
+  }
 }
 
 bool configSave() {
@@ -130,9 +176,18 @@ bool configSave() {
   d["ssid"] = cfg.ssid;
   d["pass"] = cfg.pass;
   d["apPass"] = cfg.apPass;
-  d["ledPin"] = cfg.ledPin;
-  d["ledCount"] = cfg.ledCount;
-  d["colorOrder"] = cfg.colorOrder;
+  JsonArray outs = d["outputs"].to<JsonArray>();
+  for (uint8_t k = 0; k < MAX_OUTPUTS; k++) {
+    JsonObject o = outs.add<JsonObject>();
+    o["pin"] = cfg.out[k].pin;
+    o["count"] = cfg.out[k].count;
+    o["order"] = cfg.out[k].order;
+    o["name"] = cfg.out[k].name;
+  }
+  // first output also in the old single-strip fields, so older firmware still reads it
+  d["ledPin"] = cfg.out[0].pin >= 0 ? cfg.out[0].pin : DEFAULT_OUT_PINS[0];
+  d["ledCount"] = cfg.out[0].count;
+  d["colorOrder"] = cfg.out[0].order;
   d["irPin"] = cfg.irPin;
   d["maxMa"] = cfg.maxMa;
   d["apiToken"] = cfg.apiToken;
@@ -154,22 +209,41 @@ static void loadState() {
   if (err) return;
   state.on = d["on"] | state.on;
   state.bri = d["bri"] | state.bri;
-  state.r = d["r"] | state.r;
-  state.g = d["g"] | state.g;
-  state.b = d["b"] | state.b;
-  state.effect = d["effect"] | state.effect;
-  state.speed = d["speed"] | state.speed;
+  JsonArrayConst segs = d["seg"];
+  for (uint8_t k = 0; k < MAX_OUTPUTS; k++) {
+    Seg &s = state.seg[k];
+    // per-output state; a file from before multiple outputs has one set of fields for all
+    JsonObjectConst j = segs ? segs[k].as<JsonObjectConst>() : d.as<JsonObjectConst>();
+    if (!j) continue;
+    if (segs) {  // in the old format "on"/"bri" are the master values, read above
+      s.on = j["on"] | s.on;
+      s.bri = j["bri"] | s.bri;
+    }
+    s.r = j["r"] | s.r;
+    s.g = j["g"] | s.g;
+    s.b = j["b"] | s.b;
+    s.effect = j["effect"] | s.effect;
+    if (s.effect >= EFFECT_COUNT) s.effect = 0;
+    s.speed = j["speed"] | s.speed;
+  }
 }
 
 void stateSaveNow() {
   JsonDocument d;
   d["on"] = state.on;
   d["bri"] = state.bri;
-  d["r"] = state.r;
-  d["g"] = state.g;
-  d["b"] = state.b;
-  d["effect"] = state.effect;
-  d["speed"] = state.speed;
+  JsonArray segs = d["seg"].to<JsonArray>();
+  for (uint8_t k = 0; k < MAX_OUTPUTS; k++) {
+    const Seg &s = state.seg[k];
+    JsonObject j = segs.add<JsonObject>();
+    j["on"] = s.on;
+    j["bri"] = s.bri;
+    j["r"] = s.r;
+    j["g"] = s.g;
+    j["b"] = s.b;
+    j["effect"] = s.effect;
+    j["speed"] = s.speed;
+  }
   File f = LittleFS.open(STATE_PATH, "w");
   if (f) {
     serializeJson(d, f);
@@ -195,9 +269,12 @@ void configBegin() {
   }
   loadConfig();
   loadState();
-  Serial.printf("[cfg] name='%s' host=%s ssid='%s' led=GPIO%d x%u %s ir=GPIO%d limit=%umA\n",
-                cfg.name.c_str(), deviceHostname().c_str(), cfg.ssid.c_str(), cfg.ledPin,
-                cfg.ledCount, cfg.colorOrder.c_str(), cfg.irPin, cfg.maxMa);
+  Serial.printf("[cfg] name='%s' host=%s ssid='%s' ir=GPIO%d limit=%umA\n", cfg.name.c_str(),
+                deviceHostname().c_str(), cfg.ssid.c_str(), cfg.irPin, cfg.maxMa);
+  for (uint8_t k = 0; k < MAX_OUTPUTS; k++)
+    if (outputUsed(k))
+      Serial.printf("[cfg] output %u '%s': GPIO%d x%u %s\n", k + 1, outputName(k).c_str(), cfg.out[k].pin,
+                    cfg.out[k].count, cfg.out[k].order.c_str());
 }
 
 void factoryReset() {

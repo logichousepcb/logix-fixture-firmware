@@ -166,6 +166,7 @@ static void beginSta() {
   lastAttempt = millis();
 }
 
+#if HAS_ETH
 static void stopSta() {
   if (!staOn) return;
   staOn = false;
@@ -174,6 +175,7 @@ static void stopSta() {
   WiFi.disconnect();
   WiFi.mode(wantedMode());
 }
+#endif
 
 void netPrepareScan() {
   if (!(WiFi.getMode() & WIFI_STA)) WiFi.mode(apOn ? WIFI_AP_STA : WIFI_STA);

@@ -11,6 +11,10 @@
 #include "platform.h"
 #include "web_ui.h"
 
+#if defined(ESP32)
+#include <esp_partition.h>
+#endif
+
 static WebServerT server(80);
 static WebSocketsServer ws(WS_PORT);
 static String updateError;
@@ -111,19 +115,44 @@ static bool parseHex(String s, uint8_t &r, uint8_t &g, uint8_t &b) {
   return true;
 }
 
-static void stateToJson(JsonObject o) {
+static void colorToJson(JsonObject o, const Seg &s) {
   char hex[8];
-  snprintf(hex, sizeof(hex), "#%02x%02x%02x", state.r, state.g, state.b);
+  snprintf(hex, sizeof(hex), "#%02x%02x%02x", s.r, s.g, s.b);
+  JsonArray c = o["color"].to<JsonArray>();
+  c.add(s.r);
+  c.add(s.g);
+  c.add(s.b);
+  o["hex"] = hex;
+  o["effect"] = s.effect;
+  o["effectName"] = EFFECT_NAMES[s.effect];
+  o["speed"] = s.speed;
+}
+
+// Top level: master on/bri, plus color/effect/speed of the first output (the whole fixture
+// when all outputs match, which is what single-light apps see). "segments" has every output.
+static void stateToJson(JsonObject o) {
+  const uint8_t f = firstOutput();
+  const Seg &a = state.seg[f];
   o["on"] = state.on;
   o["bri"] = state.bri;
-  JsonArray c = o["color"].to<JsonArray>();
-  c.add(state.r);
-  c.add(state.g);
-  c.add(state.b);
-  o["hex"] = hex;
-  o["effect"] = state.effect;
-  o["effectName"] = EFFECT_NAMES[state.effect];
-  o["speed"] = state.speed;
+  colorToJson(o, a);
+  bool synced = true;
+  JsonArray segs = o["segments"].to<JsonArray>();
+  for (uint8_t k = 0; k < MAX_OUTPUTS; k++) {
+    if (!outputUsed(k)) continue;
+    const Seg &s = state.seg[k];
+    // same look: same effect, and the same color/speed where the effect uses them
+    bool sameColor = s.r == a.r && s.g == a.g && s.b == a.b;
+    if (s.effect != a.effect || (effectUsesColor(s.effect) && !sameColor) || (s.effect != 0 && s.speed != a.speed))
+      synced = false;
+    JsonObject j = segs.add<JsonObject>();
+    j["id"] = k;
+    j["name"] = outputName(k);
+    j["on"] = s.on;
+    j["bri"] = s.bri;
+    colorToJson(j, s);
+  }
+  o["synced"] = synced;  // every output shows the same color/effect/speed
 }
 
 static void sendState() {
@@ -132,26 +161,32 @@ static void sendState() {
   sendJson(200, d);
 }
 
-// Validates everything first, then applies. Returns "" on success or an error message.
-static String applyState(JsonObjectConst o) {
-  State s = state;
-  long v;
-  JsonVariantConst on = o["on"];
-  if (!on.isNull()) {
-    if (on.is<bool>()) {
-      s.on = on.as<bool>();
-    } else {
-      String t = on.as<String>();
-      t.toLowerCase();
-      if (t == "toggle" || t == "t") s.on = !state.on;
-      else if (t == "1" || t == "true" || t == "on") s.on = true;
-      else if (t == "0" || t == "false" || t == "off") s.on = false;
-      else return "on must be true, false or \"toggle\"";
-    }
+// "on": true/false/"toggle" (also "1"/"0"/"on"/"off" from query strings).
+static String parseOn(JsonVariantConst on, bool &val) {
+  if (on.isNull()) return "";
+  if (on.is<bool>()) {
+    val = on.as<bool>();
+    return "";
   }
-  if (!o["bri"].isNull()) {
-    if (!getInt(o["bri"], v) || v < 0 || v > 255) return "bri must be 0-255";
-    s.bri = v;
+  String t = on.as<String>();
+  t.toLowerCase();
+  if (t == "toggle" || t == "t") val = !val;
+  else if (t == "1" || t == "true" || t == "on") val = true;
+  else if (t == "0" || t == "false" || t == "off") val = false;
+  else return "on must be true, false or \"toggle\"";
+  return "";
+}
+
+// Reads color / r / g / b / effect / speed into s (and on / bri when withOnBri).
+static String parseSeg(JsonObjectConst o, Seg &s, bool withOnBri) {
+  long v;
+  if (withOnBri) {
+    String err = parseOn(o["on"], s.on);
+    if (err.length()) return err;
+    if (!o["bri"].isNull()) {
+      if (!getInt(o["bri"], v) || v < 0 || v > 255) return "bri must be 0-255";
+      s.bri = v;
+    }
   }
   JsonVariantConst col = o["color"];
   if (!col.isNull()) {
@@ -191,7 +226,53 @@ static String applyState(JsonObjectConst o) {
     if (!getInt(o["speed"], v) || v < 0 || v > 255) return "speed must be 0-255";
     s.speed = v;
   }
-  state = s;
+  return "";
+}
+
+static String segIndex(JsonVariantConst v, uint8_t &k) {
+  long x;
+  if (!getInt(v, x) || x < 0 || x >= MAX_OUTPUTS || !outputUsed(x)) return "unknown output (seg / segments id)";
+  k = x;
+  return "";
+}
+
+// Validates everything first, then applies. Returns "" on success or an error message.
+//   {on, bri}                         master power / brightness
+//   {color, effect, speed, r, g, b}   every output (or only output "seg" if given)
+//   {seg: 2, on, bri, ...}            one output's own on/bri/color/effect/speed
+//   {segments: [{id: 2, ...}, ...]}   several outputs at once
+static String applyState(JsonObjectConst o) {
+  State ns = state;
+  String err;
+  bool syncAll = false;
+  if (!o["seg"].isNull()) {
+    uint8_t k;
+    if ((err = segIndex(o["seg"], k)).length()) return err;
+    if ((err = parseSeg(o, ns.seg[k], true)).length()) return err;
+    if (ns.seg[k].on && !state.seg[k].on) ns.on = true;  // switching an output on wakes the fixture
+  } else {
+    if ((err = parseOn(o["on"], ns.on)).length()) return err;
+    long v;
+    if (!o["bri"].isNull()) {
+      if (!getInt(o["bri"], v) || v < 0 || v > 255) return "bri must be 0-255";
+      ns.bri = v;
+    }
+    for (uint8_t k = 0; k < MAX_OUTPUTS; k++)
+      if ((err = parseSeg(o, ns.seg[k], false)).length()) return err;
+    syncAll = !o["effect"].isNull() || !o["speed"].isNull();
+  }
+  JsonVariantConst list = o["segments"];
+  if (!list.isNull()) {
+    if (!list.is<JsonArrayConst>()) return "segments must be an array";
+    for (JsonObjectConst j : list.as<JsonArrayConst>()) {
+      uint8_t k;
+      if ((err = segIndex(j["id"], k)).length()) return err;
+      if ((err = parseSeg(j, ns.seg[k], true)).length()) return err;
+      if (ns.seg[k].on && !state.seg[k].on) ns.on = true;
+    }
+  }
+  state = ns;
+  if (syncAll) ledsSync();
   stateChanged();
   return "";
 }
@@ -266,6 +347,7 @@ static void handleInfo() {
   cap["maxLeds"] = MAX_LEDS;
   cap["ota"] = true;
   cap["ethernet"] = netHasEth();
+  cap["outputs"] = MAX_OUTPUTS;
 
   JsonObject w = d["wifi"].to<JsonObject>();
   w["mode"] = netModeStr();
@@ -295,9 +377,20 @@ static void handleInfo() {
   }
 
   JsonObject l = d["leds"].to<JsonObject>();
-  l["pin"] = cfg.ledPin;
-  l["count"] = cfg.ledCount;
-  l["colorOrder"] = cfg.colorOrder;
+  const Output &o0 = cfg.out[firstOutput()];
+  l["pin"] = o0.pin;  // first output (single-strip apps)
+  l["count"] = totalLeds();
+  l["colorOrder"] = o0.order;
+  JsonArray outs = l["outputs"].to<JsonArray>();
+  for (uint8_t k = 0; k < MAX_OUTPUTS; k++) {
+    if (!outputUsed(k)) continue;
+    JsonObject j = outs.add<JsonObject>();
+    j["id"] = k;
+    j["name"] = outputName(k);
+    j["pin"] = cfg.out[k].pin;
+    j["count"] = cfg.out[k].count;
+    j["colorOrder"] = cfg.out[k].order;
+  }
   l["estimatedMa"] = ledsEstimatedMa();
   l["maxMa"] = cfg.maxMa;
   l["powerLimited"] = ledsPowerLimited();
@@ -319,6 +412,24 @@ static void handleInfo() {
   sys["freeSketchSpace"] = ESP.getFreeSketchSpace();
   sys["flashSize"] = flashSize();
   sys["resetReason"] = resetReason();
+#if defined(ESP32)
+  // Flash layout as found on the chip (OTA can't change it, so it may be the previous firmware's).
+  JsonArray parts = sys["partitions"].to<JsonArray>();
+  esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, nullptr);
+  for (; it; it = esp_partition_next(it)) {
+    const esp_partition_t *pt = esp_partition_get(it);
+    JsonObject j = parts.add<JsonObject>();
+    j["label"] = pt->label;
+    j["type"] = pt->type;
+    j["subtype"] = pt->subtype;
+    char hex[11];
+    snprintf(hex, sizeof(hex), "0x%x", (unsigned)pt->address);
+    j["offset"] = hex;
+    snprintf(hex, sizeof(hex), "0x%x", (unsigned)pt->size);
+    j["size"] = hex;
+  }
+  esp_partition_iterator_release(it);
+#endif
   sendJson(200, d);
 }
 
@@ -358,9 +469,19 @@ static void handleConfigGet() {
   d["ssid"] = cfg.ssid;
   d["hasPass"] = cfg.pass.length() > 0;
   d["hasApPass"] = cfg.apPass.length() > 0;
-  d["ledPin"] = cfg.ledPin;
-  d["ledCount"] = cfg.ledCount;
-  d["colorOrder"] = cfg.colorOrder;
+  d["ledPin"] = cfg.out[0].pin;  // output 1, for single-strip apps
+  d["ledCount"] = cfg.out[0].count;
+  d["colorOrder"] = cfg.out[0].order;
+  d["maxOutputs"] = MAX_OUTPUTS;
+  d["maxLeds"] = MAX_LEDS;
+  JsonArray outs = d["outputs"].to<JsonArray>();
+  for (uint8_t k = 0; k < MAX_OUTPUTS; k++) {
+    JsonObject j = outs.add<JsonObject>();
+    j["pin"] = cfg.out[k].pin;  // -1 = not used
+    j["count"] = cfg.out[k].count;
+    j["order"] = cfg.out[k].order;
+    j["name"] = cfg.out[k].name;
+  }
   d["irPin"] = cfg.irPin;
   d["maxMa"] = cfg.maxMa;
   d["fixture"] = cfg.fixture;
@@ -386,20 +507,48 @@ static void handleConfigPost() {
       return sendErr(400, "AP password must be empty (open) or 8-63 characters");
     c.apPass = p;
   }
-  if (!d["ledPin"].isNull()) {
-    if (!getInt(d["ledPin"], v) || !validLedPin(v)) return sendErr(400, "invalid LED GPIO");
-    c.ledPin = v;
+  // outputs: [{pin, count, order, name}, ...] (pin -1 = not used); ledPin/ledCount/colorOrder
+  // still set output 1 for single-strip apps.
+  auto parseOut = [&](JsonObjectConst j, Output &o, bool allowUnused) -> String {
+    long v;
+    if (!j["pin"].isNull()) {
+      if (!getInt(j["pin"], v) || !((allowUnused && v == -1) || validLedPin(v))) return "invalid LED GPIO";
+      o.pin = v;
+    }
+    if (!j["count"].isNull()) {
+      if (!getInt(j["count"], v) || v < 1 || v > MAX_LEDS) return String("LED count must be 1-") + MAX_LEDS;
+      o.count = v;
+    }
+    if (!j["order"].isNull()) {
+      String s = j["order"].as<String>();
+      s.toUpperCase();
+      if (!validColorOrder(s)) return "color order must be RGB, RBG, GRB, GBR, BRG or BGR";
+      o.order = s;
+    }
+    if (!j["name"].isNull()) {
+      String s = j["name"].as<String>();
+      s.trim();
+      if (s.length() > 24) return "output names can be at most 24 characters";
+      o.name = s;
+    }
+    return "";
+  };
+  JsonVariantConst outs = d["outputs"];
+  if (!outs.isNull()) {
+    if (!outs.is<JsonArrayConst>() || outs.size() > MAX_OUTPUTS)
+      return sendErr(400, String("outputs must be an array of up to ") + MAX_OUTPUTS);
+    for (uint8_t k = 0; k < outs.size(); k++) {
+      String err = parseOut(outs[k], c.out[k], true);
+      if (err.length()) return sendErr(400, "output " + String(k + 1) + ": " + err);
+    }
   }
-  if (!d["ledCount"].isNull()) {
-    if (!getInt(d["ledCount"], v) || v < 1 || v > MAX_LEDS)
-      return sendErr(400, String("ledCount must be 1-") + MAX_LEDS);
-    c.ledCount = v;
-  }
-  if (!d["colorOrder"].isNull()) {
-    String o = d["colorOrder"].as<String>();
-    o.toUpperCase();
-    if (!validColorOrder(o)) return sendErr(400, "colorOrder must be RGB, RBG, GRB, GBR, BRG or BGR");
-    c.colorOrder = o;
+  {
+    JsonDocument legacy;
+    if (!d["ledPin"].isNull()) legacy["pin"] = d["ledPin"];
+    if (!d["ledCount"].isNull()) legacy["count"] = d["ledCount"];
+    if (!d["colorOrder"].isNull()) legacy["order"] = d["colorOrder"];
+    String err = parseOut(legacy.as<JsonObjectConst>(), c.out[0], false);
+    if (err.length()) return sendErr(400, err);
   }
   if (!d["irPin"].isNull()) {
     if (!getInt(d["irPin"], v) || !validIrPin(v)) return sendErr(400, "invalid IR GPIO");
@@ -415,8 +564,22 @@ static void handleConfigPost() {
     if (!validFixture(f)) return sendErr(400, "fixture must be custom, string or snowflake91");
     c.fixture = f;
   }
-  if (c.fixture == "snowflake91") c.ledCount = 91;  // fixed pixel count for this model
-  if (c.irPin >= 0 && c.irPin == c.ledPin) return sendErr(400, "LED and IR can't share a GPIO");
+  if (c.fixture == "snowflake91") c.out[0].count = 91;  // fixed pixel count for this model
+  {
+    uint16_t total = 0;
+    bool any = false;
+    for (uint8_t k = 0; k < MAX_OUTPUTS; k++) {
+      const Output &o = c.out[k];
+      if (o.pin < 0) continue;
+      any = true;
+      total += o.count;
+      for (uint8_t j = 0; j < k; j++)
+        if (c.out[j].pin == o.pin) return sendErr(400, "outputs " + String(j + 1) + " and " + String(k + 1) + " use the same GPIO");
+      if (c.irPin >= 0 && c.irPin == o.pin) return sendErr(400, "LED and IR can't share a GPIO");
+    }
+    if (!any) return sendErr(400, "at least one output needs a GPIO");
+    if (total > MAX_LEDS) return sendErr(400, String("too many LEDs: ") + total + " in total, the limit is " + MAX_LEDS);
+  }
   if (!d["apiToken"].isNull()) {
     String t = d["apiToken"].as<String>();
     t.trim();
@@ -431,13 +594,16 @@ static void handleConfigPost() {
   }
 
   // Name and auth on/off are part of the mDNS announcement, so they need a restart too.
-  bool reboot = c.name != cfg.name || c.ledPin != cfg.ledPin || c.ledCount != cfg.ledCount ||
-                c.irPin != cfg.irPin || (c.apiToken.length() > 0) != (cfg.apiToken.length() > 0);
-  bool orderChanged = c.colorOrder != cfg.colorOrder;
+  bool outsChanged = false, orderChanged = false;
+  for (uint8_t k = 0; k < MAX_OUTPUTS; k++) {
+    if (c.out[k].pin != cfg.out[k].pin || c.out[k].count != cfg.out[k].count) outsChanged = true;
+    if (c.out[k].order != cfg.out[k].order) orderChanged = true;
+  }
+  bool reboot = c.name != cfg.name || outsChanged || c.irPin != cfg.irPin || (c.apiToken.length() > 0) != (cfg.apiToken.length() > 0);
   bool tokenChanged = c.apiToken != cfg.apiToken;
   cfg = c;
   if (!configSave()) return sendErr(500, "could not save settings");
-  if (orderChanged) ledsSetOrder(cfg.colorOrder);
+  if (orderChanged && !reboot) ledsUpdateOrders();
   JsonDocument r;
   r["ok"] = true;
   if (reboot) r["reboot"] = true;
