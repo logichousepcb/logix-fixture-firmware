@@ -4,7 +4,7 @@
 #include "platform.h"
 
 #define FW_NAME "LoGiX Fixture"
-#define FW_VERSION "1.11.0"
+#define FW_VERSION "1.12.0"
 #define FW_MODEL "logixfixture"  // board identifier for apps (mDNS TXT "model"), LoGiX naming scheme
 #define FW_MANUFACTURER "Logix"
 #define API_VERSION 1            // bump on breaking API changes (mDNS TXT "api")
