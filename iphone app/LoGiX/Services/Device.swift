@@ -50,7 +50,7 @@ final class Device: Identifiable {
     @ObservationIgnored private var socketGeneration = 0
     @ObservationIgnored private var active = false
     @ObservationIgnored private var lifecycleTask: Task<Void, Never>?
-    @ObservationIgnored private var pending: [String: Any] = [:]
+    @ObservationIgnored private var pending: [Target: [String: Any]] = [:]
     @ObservationIgnored private var flushTask: Task<Void, Never>?
     @ObservationIgnored private var lastLocalEdit = Date.distantPast
 
@@ -239,39 +239,94 @@ final class Device: Identifiable {
             if let v = info.version { r.firmware = v }
             if let a = info.auth { r.auth = a }
             if let w = info.wsPort { r.wsPort = w }
+            if let b = info.board { r.board = b }
+            if let f = info.fixture { r.fixture = f }
+            // Firmware 1.10+ reports its own address; prefer it over a slow-to-resolve .local name.
+            if r.host.hasSuffix(".local"), let ip = info.homeIP, !ip.isEmpty { r.host = ip }
             r.lastSeen = .now
         }
     }
 
     // MARK: Commands
+    //
+    // Every command takes a target: all outputs (top-level fields; `on`/`bri` are the master power and
+    // brightness) or one output (`seg`; `on`/`bri` are that output's own).
 
-    func setPower(_ on: Bool) {
-        mutate { $0.on = on }
-        send(["on": on])
+    enum Target: Hashable {
+        case all
+        case output(Int)
     }
 
-    func toggle() { setPower(!(state?.on ?? false)) }
+    /// Look fields an edit changes (color slot, effect, speed).
+    struct LookEdit {
+        var color: (slot: Int, value: RGB)?
+        var effect: Effect?
+        var speed: Int?
 
-    func setBrightness(_ bri: Int) {
+        func apply<L: LightLook>(to l: inout L) {
+            if let color { l.setColor(slot: color.slot, color.value) }
+            if let effect { l.effect = effect.id; l.effectName = effect.name }
+            if let speed { l.speed = speed }
+        }
+    }
+
+    // Read helpers for the UI
+
+    func look(_ t: Target) -> any LightLook {
+        let s = state ?? .placeholder
+        if case .output(let id) = t, let seg = s.segment(id) { return seg }
+        return s
+    }
+
+    func isOn(_ t: Target) -> Bool {
+        guard let s = state else { return false }
+        if case .output(let id) = t, let seg = s.segment(id) { return seg.on && s.on }
+        return s.on
+    }
+
+    func effect(id: Int) -> Effect? { effects.first { $0.id == id } ?? Effect.builtIn[safe: id] }
+
+    // Commands
+
+    func setPower(_ on: Bool, _ t: Target = .all) {
+        mutate(t, on: on)
+        send(t, ["on": on])
+    }
+
+    func toggle(_ t: Target = .all) { setPower(!isOn(t), t) }
+
+    func setBrightness(_ bri: Int, _ t: Target = .all) {
         let b = max(1, min(255, bri))
-        mutate { $0.bri = b; $0.on = true }
-        send(["bri": b, "on": true])
+        mutate(t, on: true, bri: b)
+        send(t, ["bri": b, "on": true])
     }
 
-    func setColor(_ c: RGB) {
-        mutate { $0.rgb = c; $0.on = true }
-        send(["color": c.hex, "on": true])
+    /// Sets one of colors 1-3. If the current effect draws its own palette, switches to Solid so the
+    /// color is actually visible (same as the web UI's swatches).
+    func setColor(_ c: RGB, slot: Int = 0, _ t: Target = .all) {
+        var edit = LookEdit(color: (slot, c))
+        var patch: [String: Any] = ["on": true]
+        var cols: [Any] = [NSNull(), NSNull(), NSNull()]
+        cols[slot] = c.hex
+        patch["colors"] = cols
+        if slot == 0 { patch["color"] = c.hex }   // firmware before 1.10 only knows "color"
+        if (effect(id: look(t).effect)?.colorCount ?? 1) == 0, let solid = effect(id: 0) {
+            edit.effect = solid
+            patch["effect"] = 0
+        }
+        mutate(t, on: true, edit: edit)
+        send(t, patch)
     }
 
-    func setEffect(_ e: Effect) {
-        mutate { $0.effect = e.id; $0.effectName = e.name; $0.on = true }
-        send(["effect": e.id, "on": true])
+    func setEffect(_ e: Effect, _ t: Target = .all) {
+        mutate(t, on: true, edit: LookEdit(effect: e))
+        send(t, ["effect": e.id, "on": true])
     }
 
-    func setSpeed(_ speed: Int) {
-        let s = max(0, min(255, speed))
-        mutate { $0.speed = s }
-        send(["speed": s])
+    func setSpeed(_ speed: Int, _ t: Target = .all) {
+        let v = max(0, min(255, speed))
+        mutate(t, edit: LookEdit(speed: v))
+        send(t, ["speed": v])
     }
 
     func identify() async {
@@ -282,27 +337,81 @@ final class Device: Identifiable {
         }
     }
 
-    private func mutate(_ f: (inout FixtureState) -> Void) {
+    /// Optimistic local update so the UI responds immediately; the next state push corrects it.
+    private func mutate(_ t: Target, on: Bool? = nil, bri: Int? = nil, edit: LookEdit = LookEdit()) {
         var s = state ?? .placeholder
-        f(&s)
+        switch t {
+        case .all:
+            if let on { s.on = on }
+            if let bri { s.bri = bri }
+            edit.apply(to: &s)
+            if var segs = s.segments {
+                for i in segs.indices { edit.apply(to: &segs[i]) }
+                s.segments = segs
+                if edit.effect != nil || edit.color != nil { s.synced = true }
+            }
+        case .output(let id):
+            if var segs = s.segments, let i = segs.firstIndex(where: { $0.id == id }) {
+                if let on { segs[i].on = on; if on { s.on = true } }
+                if let bri { segs[i].bri = bri }
+                edit.apply(to: &segs[i])
+                if i == 0 { edit.apply(to: &s) }   // top level mirrors the first output
+                s.segments = segs
+            }
+        }
         state = s
         lastLocalEdit = .now
     }
 
-    private func send(_ patch: [String: Any]) {
-        pending.merge(patch) { $1 }
+    private func send(_ t: Target, _ patch: [String: Any]) {
+        pending[t, default: [:]].merge(patch) { old, new in
+            // colors: [c1, c2, c3] with NSNull = unchanged, so merge slot by slot
+            if let a = old as? [Any], let b = new as? [Any] {
+                return (0..<max(a.count, b.count)).map { i in
+                    let n = b[safe: i] ?? NSNull()
+                    return n is NSNull ? (a[safe: i] ?? NSNull()) : n
+                }
+            }
+            return new
+        }
         lastLocalEdit = .now
         guard flushTask == nil else { return }
         flushTask = Task { [weak self] in
             while let self, !self.pending.isEmpty {
                 let p = self.pending
                 self.pending = [:]
-                await self.transmit(p)
+                await self.transmit(Self.message(for: p))
                 try? await Task.sleep(for: .milliseconds(60))
             }
             self?.flushTask = nil
             self?.lastLocalEdit = .now
+            // Pushes that arrived during the edit were ignored (so sliders don't jump back);
+            // once things settle, fetch the device's real state (e.g. "synced" or clamped values).
+            try? await Task.sleep(for: .milliseconds(900))
+            guard let self, self.flushTask == nil, !self.recentlyEdited else { return }
+            await self.requestState()
         }
+    }
+
+    private func requestState() async {
+        if let socket, link == .live {
+            try? await socket.send(.string(#"{"type":"get"}"#))
+        } else if let s = try? await api?.state() {
+            state = s
+        }
+    }
+
+    /// One message: all-output fields at the top level, per-output edits in "segments".
+    private static func message(for p: [Target: [String: Any]]) -> [String: Any] {
+        var msg = p[.all] ?? [:]
+        let segs: [[String: Any]] = p.compactMap { t, fields in
+            guard case .output(let id) = t else { return nil }
+            var f = fields
+            f["id"] = id
+            return f
+        }.sorted { ($0["id"] as? Int ?? 0) < ($1["id"] as? Int ?? 0) }
+        if !segs.isEmpty { msg["segments"] = segs }
+        return msg
     }
 
     private func transmit(_ patch: [String: Any]) async {

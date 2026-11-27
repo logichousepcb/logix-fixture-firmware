@@ -44,6 +44,13 @@ struct DeviceListView: View {
                     d.setColor(RGB(r: 0, g: 255, b: 64))
                     for b in stride(from: 40, through: 220, by: 10) { d.setBrightness(b); try? await Task.sleep(for: .milliseconds(15)) }
                     if let fx = d.effects.first(where: { $0.name == "Twinkle" }) { d.setEffect(fx) }
+                    try? await Task.sleep(for: .milliseconds(300))
+                    if d.state?.isMulti == true {
+                        d.setColor(RGB(r: 255, g: 0, b: 0), slot: 2, .output(1))
+                        if let fx = d.effects.first(where: { $0.name == "Bounce-In" }) { d.setEffect(fx, .output(1)) }
+                        d.setPower(false, .output(2))
+                        d.setBrightness(90, .output(0))
+                    }
                 }
             }
             #endif
@@ -186,14 +193,26 @@ struct DeviceCard: View {
 
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 14) {
-                ZStack {
-                    Circle()
-                        .fill(device.record.isFixture && on ? color : Theme.line)
-                        .frame(width: 44, height: 44)
-                        .shadow(color: on ? color.opacity(0.7) : .clear, radius: on ? 10 : 0)
-                    Image(systemName: device.record.isFixture ? "lightbulb.fill" : device.record.modelSymbol)
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(on ? .black.opacity(0.55) : Theme.muted)
+                ZStack(alignment: .bottomTrailing) {
+                    if let model = iconModel {
+                        ModelIcon(model: model, base: device.record.baseURL, size: 44)
+                            .opacity(on ? 1 : 0.55)
+                        Circle()
+                            .fill(on ? AnyShapeStyle(lookFill(s!)) : AnyShapeStyle(Theme.line))
+                            .frame(width: 14, height: 14)
+                            .overlay(Circle().stroke(Theme.card, lineWidth: 2))
+                            .offset(x: 3, y: 3)
+                    } else {
+                        ZStack {
+                            Circle()
+                                .fill(device.record.isFixture && on ? AnyShapeStyle(lookFill(s!)) : AnyShapeStyle(Theme.line))
+                                .frame(width: 44, height: 44)
+                                .shadow(color: on ? color.opacity(0.7) : .clear, radius: on ? 10 : 0)
+                            Image(systemName: device.record.isFixture ? "lightbulb.fill" : device.record.modelSymbol)
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(on ? .black.opacity(0.55) : Theme.muted)
+                        }
+                    }
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     Text(device.name).font(.headline).lineLimit(1)
@@ -236,13 +255,30 @@ struct DeviceCard: View {
         .opacity(device.isOnline || device.link == .connecting ? 1 : 0.6)
     }
 
+    /// Picture of the fixture model when every output is the same model and it has one.
+    private var iconModel: FixtureModel? {
+        guard device.record.isFixture else { return nil }
+        let ms = device.state?.models ?? []
+        let m = FixtureModel.named(ms.count == 1 ? ms.first : (ms.isEmpty ? device.record.fixture : nil))
+        return m.hasIcon ? m : nil
+    }
+
+    private func lookFill(_ s: FixtureState) -> any ShapeStyle {
+        LookStyle.fill(s, nColors: device.effect(id: s.effect)?.colorCount ?? 1)
+    }
+
     private var subtitle: String {
         var parts: [String] = []
         if !device.record.isFixture { parts.append(device.record.modelDisplayName) }
         switch device.link {
         case .live, .polling:
             if let s = device.state {
-                parts.append(s.on ? (s.effectName ?? "On") : "Off")
+                if s.isMulti {
+                    let n = s.segments?.count ?? 0
+                    parts.append(s.on ? (s.synced == false ? "\(n) outputs · mixed" : "\(n) outputs · \(s.effectName ?? "On")") : "Off")
+                } else {
+                    parts.append(s.on ? (s.effectName ?? "On") : "Off")
+                }
             } else { parts.append("Online") }
         case .idle: parts.append(device.discovered ? "Online" : "Offline")
         default: parts.append(device.link.label)

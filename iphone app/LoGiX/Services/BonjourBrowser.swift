@@ -110,7 +110,12 @@ final class BonjourBrowser {
         if let ip = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
             ip.version = .v4
         }
-        let conn = NWConnection(to: endpoint, using: params)
+        // Don't pin the connection to the interface the announcement arrived on: a fixture on another
+        // subnet (mDNS reflected by the router, reached through a gateway or VPN) is only reachable
+        // through the normal routing table.
+        var target = endpoint
+        if case .service(let n, let t, let d, _) = endpoint { target = .service(name: n, type: t, domain: d, interface: nil) }
+        let conn = NWConnection(to: target, using: params)
         resolving[name] = conn
         var done = false
 
@@ -121,6 +126,14 @@ final class BonjourBrowser {
             if self.resolving[name] === conn { self.resolving[name] = nil }
             log("resolved \(name) -> \(host):\(port) txt=\(txt)")
             self.onFound?(Service(serviceName: name, txt: txt, host: host, port: port))
+        }
+
+        // Connection attempt failed (e.g. the fixture is on another subnet and the announcement came in
+        // on an interface that can't reach it): look the hostname up instead. The firmware uses its
+        // hostname as the Bonjour instance name, and the system resolver routes normally.
+        let fallback: @Sendable () -> Void = {
+            let ip = Self.lookupIPv4("\(name).local")
+            Task { @MainActor in finish(ip ?? "\(name).local", 80) }
         }
 
         conn.stateUpdateHandler = { state in
@@ -136,10 +149,10 @@ final class BonjourBrowser {
                     }
                     Task { @MainActor in finish(h, Int(port.rawValue)) }
                 } else {
-                    Task { @MainActor in finish("\(name).local", 80) }
+                    DispatchQueue.global().async(execute: fallback)
                 }
             case .failed, .waiting:
-                Task { @MainActor in finish("\(name).local", 80) }
+                DispatchQueue.global().async(execute: fallback)
             default: break
             }
         }
@@ -148,8 +161,24 @@ final class BonjourBrowser {
         // Don't wait forever on resolution
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(5))
-            finish("\(name).local", 80)
+            if !done { DispatchQueue.global().async(execute: fallback) }
         }
+    }
+
+    /// Blocking IPv4 lookup through the system resolver (handles .local via mDNS).
+    nonisolated static func lookupIPv4(_ host: String) -> String? {
+        var hints = addrinfo(ai_flags: 0, ai_family: AF_INET, ai_socktype: SOCK_STREAM, ai_protocol: 0,
+                             ai_addrlen: 0, ai_canonname: nil, ai_addr: nil, ai_next: nil)
+        var res: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, "80", &hints, &res) == 0, let r = res else { return nil }
+        defer { freeaddrinfo(r) }
+        var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        r.pointee.ai_addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
+            var a = $0.pointee.sin_addr
+            _ = inet_ntop(AF_INET, &a, &buf, socklen_t(INET_ADDRSTRLEN))
+        }
+        let ip = String(cString: buf)
+        return ip.isEmpty || ip.hasPrefix("169.254.") ? nil : ip
     }
 }
 

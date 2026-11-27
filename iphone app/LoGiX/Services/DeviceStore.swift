@@ -74,12 +74,13 @@ final class DeviceStore {
                 r.wsPort = wsPort
                 r.auth = auth
                 r.firmware = svc.txt["fw"] ?? r.firmware
+                r.board = svc.txt["board"] ?? r.board
                 r.lastSeen = .now
             }
             if isActive, !d.link.isUsable, d.link != .connecting { d.reconnect() }
         } else {
             let rec = DeviceRecord(id: id, name: name, model: model, host: svc.host, port: svc.port,
-                                   wsPort: wsPort, firmware: svc.txt["fw"], auth: auth)
+                                   wsPort: wsPort, firmware: svc.txt["fw"], auth: auth, board: svc.txt["board"])
             let d = add(rec)
             d.discovered = true
         }
@@ -127,7 +128,8 @@ final class DeviceStore {
         guard !host.isEmpty, let api = FixtureAPI(host: host, port: port, token: token) else { throw APIError.badURL }
         let info = try await api.info()
         let rec = DeviceRecord(id: info.id, name: info.name, model: info.model ?? "", host: host, port: port,
-                               wsPort: info.wsPort ?? 81, firmware: info.version, auth: info.auth ?? false)
+                               wsPort: info.wsPort ?? 81, firmware: info.version, auth: info.auth ?? false,
+                               board: info.board, fixture: info.fixture)
         let d = add(rec)
         if let token, !token.isEmpty { d.token = token }
         d.reconnect()
