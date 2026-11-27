@@ -148,7 +148,7 @@ let S={},I={},C={},pending={},timer=null,lastSend=0;
 const SW=['#ff0000','#ff6a00','#ffc400','#00ff40','#00d0ff','#0040ff','#a000ff','#ff00a0','#ffffff','#ff9329'];
 const LEDP=[[2,'GPIO2 – LED headers (board default)'],[4,'GPIO4 – IR receiver on this board'],[5,'GPIO5'],[12,'GPIO12'],[13,'GPIO13'],[14,'GPIO14'],[0,'GPIO0 – must be HIGH at boot'],[15,'GPIO15 – must be LOW at boot'],[3,'GPIO3/RX – disables serial'],[1,'GPIO1/TX – disables serial']];
 // Fixture models: id, label, preset LED count (0 = keep whatever is set), icon.
-const MODELS=[['custom','Custom / other',0,''],['string','String Lights',0,'/icon/string.webp'],['snowflake91','91 Pixel Snowflake',91,'/icon/snowflake91.webp'],['arches4x24','4 Arches (24 px each)',96,'/icon/arches4x24.webp']];
+const MODELS=[['custom','Custom / other',0,''],['string','String Lights',0,'/icon/string.webp'],['snowflake91','91 Pixel Snowflake',91,'/icon/snowflake91.webp'],['arches4x24','4 Arches (24 px each)',96,'/icon/arches4x24.webp'],['tree81','81 Pixel Light Tree',81,'/icon/tree81.webp']];
 const model=id=>MODELS.find(m=>m[0]===id)||MODELS[0];
 function showIcon(el,id){const m=model(id);el.hidden=!m[3];if(m[3])el.src=m[3];else el.removeAttribute('src')}
 // WT32-ETH01: Ethernet owns GPIO0/16/18/19/21/22/23/25/26/27; 35/36/39 are input-only (IR only).

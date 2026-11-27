@@ -85,6 +85,6 @@ String outputName(uint8_t k);
 bool validLedPin(int pin);
 bool validIrPin(int pin);
 bool validColorOrder(const String &o);
-bool validModel(const String &m);       // custom, string, snowflake91, arches4x24
+bool validModel(const String &m);       // custom, string, snowflake91, arches4x24, tree81
 uint16_t modelFixedCount(const String &m);  // LEDs a model always has; 0 = any count
 String fixtureModel();       // model of the first used output (the device's "fixture" in the API)

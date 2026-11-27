@@ -295,6 +295,7 @@ Response: `{"ok":true}`, or `{"ok":true,"reboot":true}` when the device is about
 | `string` | String Lights | any |
 | `snowflake91` | 91 Pixel Snowflake | fixed at 91 |
 | `arches4x24` | 4 Arches (24 px each) | fixed at 96 |
+| `tree81` | 81 Pixel Light Tree | fixed at 81 |
 When the token changes, the response includes the new `apiToken`.
 
 ```bash

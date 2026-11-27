@@ -113,12 +113,13 @@ bool validColorOrder(const String &o) {
 }
 
 bool validModel(const String &m) {
-  return m == "custom" || m == "string" || m == "snowflake91" || m == "arches4x24";
+  return m == "custom" || m == "string" || m == "snowflake91" || m == "arches4x24" || m == "tree81";
 }
 
 uint16_t modelFixedCount(const String &m) {
   if (m == "snowflake91") return 91;
   if (m == "arches4x24") return 96;  // 4 arches x 24 pixels
+  if (m == "tree81") return 81;
   return 0;
 }
 

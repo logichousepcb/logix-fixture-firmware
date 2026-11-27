@@ -333,6 +333,7 @@ static void handleIcon() {
   if (u == "/icon/string.webp") p = ICON_STRING, n = sizeof(ICON_STRING);
   else if (u == "/icon/snowflake91.webp") p = ICON_SNOWFLAKE, n = sizeof(ICON_SNOWFLAKE);
   else if (u == "/icon/arches4x24.webp") p = ICON_ARCHES, n = sizeof(ICON_ARCHES);
+  else if (u == "/icon/tree81.webp") p = ICON_TREE, n = sizeof(ICON_TREE);
   if (!p) return server.send(404, "text/plain", "not found");
   server.sendHeader("Cache-Control", "max-age=604800");
   server.send_P(200, "image/webp", (PGM_P)p, n);
@@ -569,7 +570,7 @@ static void handleConfigPost() {
     }
     if (!j["model"].isNull()) {
       String m = j["model"].as<String>();
-      if (!validModel(m)) return "model must be custom, string, snowflake91 or arches4x24";
+      if (!validModel(m)) return "model must be custom, string, snowflake91, arches4x24 or tree81";
       o.model = m;
     }
     return "";
@@ -577,7 +578,7 @@ static void handleConfigPost() {
   // "fixture" = output 1's model (from before each output had its own); outputs[0].model wins
   if (!d["fixture"].isNull()) {
     String f = d["fixture"].as<String>();
-    if (!validModel(f)) return sendErr(400, "fixture must be custom, string, snowflake91 or arches4x24");
+    if (!validModel(f)) return sendErr(400, "fixture must be custom, string, snowflake91, arches4x24 or tree81");
     c.out[0].model = f;
   }
   JsonVariantConst outs = d["outputs"];
@@ -879,6 +880,7 @@ void webBegin() {
   server.on("/icon/string.webp", HTTP_GET, handleIcon);
   server.on("/icon/snowflake91.webp", HTTP_GET, handleIcon);
   server.on("/icon/arches4x24.webp", HTTP_GET, handleIcon);
+  server.on("/icon/tree81.webp", HTTP_GET, handleIcon);
   server.on("/api/info", HTTP_GET, handleInfo);  // public identity block; full details need auth
   server.on("/api/state", HTTP_GET, guarded<sendState>);
   server.on("/api/state", HTTP_POST, guarded<handleStatePost>);
