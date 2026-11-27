@@ -152,7 +152,7 @@ Open `http://<hostname>.local` or the device's IP address.
 
 | Section | What it does |
 | --- | --- |
-| **Control** (top card) | Power, brightness, color picker + swatches, effect, speed, live current estimate |
+| **Control** (top card) | Power, brightness, three color pickers (colors 1-3) + swatches, effect, speed, live current estimate. Click a color box to pick which color the swatches set. Boxes the current effect doesn't use are dimmed. |
 | **Wi-Fi** | Scan, connect to a new network, forget the network (reboots into setup mode) |
 | **Device** | Friendly **name**, which sets the hostname (`Kitchen Shelf` → `kitchen-shelf.local`) and the Bonjour name. Optional setup-hotspot password. **Identify** blinks the LEDs. **API token** on/off, with a pairing QR code. |
 | **Hardware** | **LED data GPIO**, **LED count**, **color order**, **IR receiver GPIO**, **power limit**. Use this when you move the firmware to a different board. Saving reboots. |
@@ -168,6 +168,19 @@ the strip (speed 0 = still). The **Solid** version (e.g. "Buffalo Bills Solid") 
 | Buffalo Bills (10) | Buffalo Bills Solid (13) | blue `(0,51,141)`, red `(198,12,48)`, white |
 | Buffalo Sabres (11) | Buffalo Sabres Solid (14) | navy `(0,48,135)`, gold `(255,184,28)` |
 | Lake Shore (12) | Lake Shore Solid (15) | white, forest green `(34,139,34)` |
+
+Frost (16), Valentine (17) and **Fall** (18) have their own palettes. Fall is white, orange
+`(255,160,0)` and gold `(255,200,0)` drifting slowly along the strip with a soft shimmer.
+
+**Your own colors.** Each output has three colors you choose (or set them for all outputs under "All"):
+
+| Effect | Colors used | What it does |
+| --- | --- | --- |
+| Solid 1 / 2 / 3 Colors (19–21) | 1, 1–2, 1–3 | Blocks of 3 LEDs in each color, standing still |
+| Chase 1 / 2 / 3 Colors (22–24) | 1, 1–2, 1–3 | The same blocks moving along the strip (1 color: with dark gaps) |
+| Bounce-In (25) | 1–3 | A chase runs in from both ends, meets in the middle and runs back out. Each trip uses the next color; colors set to black are skipped |
+
+Solid, Breathe, Color Wipe, Theater Chase, Twinkle, Comet and Candle use color 1.
 State (on, brightness, color, effect, speed) is saved to flash 5 s after the last change and restored
 at power-up.
 

@@ -54,7 +54,9 @@ const char *const EFFECT_NAMES[] = {"Solid",         "Breathe",       "Rainbow",
                                     "Color Wipe",    "Theater Chase", "Twinkle", "Comet",
                                     "Candle",        "Christmas",     "Buffalo Bills", "Buffalo Sabres",
                                     "Lake Shore",    "Buffalo Bills Solid", "Buffalo Sabres Solid",
-                                    "Lake Shore Solid", "Frost", "Valentine"};
+                                    "Lake Shore Solid", "Frost", "Valentine", "Fall",
+                                    "Solid 1 Color", "Solid 2 Colors", "Solid 3 Colors",
+                                    "Chase 1 Color", "Chase 2 Colors", "Chase 3 Colors", "Bounce-In"};
 
 // Team / theme colors, shown as pairs of LEDs (2 of each color) repeating along the strip.
 static const uint8_t BILLS[][3] = {{0, 51, 141}, {198, 12, 48}, {255, 255, 255}};  // blue, red, white
@@ -89,11 +91,22 @@ static const uint8_t VALENTINE[][3] = {
 };
 static const uint8_t VALENTINE_N = sizeof(VALENTINE) / sizeof(VALENTINE[0]);
 
+// Fall: white, orange and gold.
+static const uint8_t FALL[][3] = {{255, 255, 255}, {255, 160, 0}, {255, 200, 0}};
+static const uint8_t FALL_N = sizeof(FALL) / sizeof(FALL[0]);
+
 static const uint8_t XMAS_N = sizeof(XMAS) / sizeof(XMAS[0]);
 const uint8_t EFFECT_COUNT = sizeof(EFFECT_NAMES) / sizeof(EFFECT_NAMES[0]);
 
-// Solid, Breathe, Color Wipe, Theater Chase, Twinkle, Comet and Candle draw with the chosen color.
-bool effectUsesColor(uint8_t e) { return e <= 1 || (e >= 4 && e <= 8); }
+// Solid, Breathe, Color Wipe, Theater Chase, Twinkle, Comet and Candle draw with color 1; the
+// Solid/Chase N Color(s) effects with colors 1..N; Bounce-In with all three.
+uint8_t effectColors(uint8_t e) {
+  if (e <= 1 || (e >= 4 && e <= 8)) return 1;
+  if (e >= 19 && e <= 21) return e - 18;
+  if (e >= 22 && e <= 24) return e - 21;
+  if (e == 25) return 3;
+  return 0;
+}
 
 static const uint32_t FRAME_MS = 20;      // 50 fps
 static const float FADE_MS = 400.0f;      // on/off & brightness transition
@@ -266,6 +279,20 @@ static void pairs(const uint8_t (*colors)[3], uint8_t count, uint32_t p, bool mo
   }
 }
 
+// Blocks of the output's colors (BLOCK LEDs each): c1 c2 c3 c1 c2 c3 ... With one color and
+// `gap`, every block of color is followed by a dark one. `shift` moves the pattern forward.
+static const uint8_t BLOCK = 3;
+static void blocks(uint8_t count, bool gap, uint32_t shift) {
+  const uint8_t c1[3] = {sg->r, sg->g, sg->b};
+  const uint8_t *cols[3] = {c1, sg->c2, sg->c3};
+  const uint32_t period = (uint32_t)(count + (gap ? 1 : 0)) * BLOCK;
+  for (uint16_t i = 0; i < n; i++) {
+    uint8_t slot = ((i + period - shift % period) % period) / BLOCK;
+    if (slot < count) px(i, cols[slot][0], cols[slot][1], cols[slot][2]);
+    else px(i, 0, 0, 0);
+  }
+}
+
 // --------------------------------------------------------------------------- effects
 // Renders one output: frame/n/sg/rt point at it (see ledsLoop).
 static void render(uint32_t dt) {
@@ -422,6 +449,58 @@ static void render(uint32_t dt) {
         blendPalette(VALENTINE, VALENTINE_N, pos, r, g, b);
         px(i, scale8(r, lvl), scale8(g, lvl), scale8(b, lvl));
       }
+      break;
+    }
+
+    case 18: {  // Fall: white, orange and gold drift slowly down the strip, each LED shimmering softly
+      for (uint16_t i = 0; i < n; i++) {
+        uint16_t pos = (uint16_t)(i * 16 + 4096 - (p / 2) % 4096);  // drifts toward the start
+        uint8_t r, g, b;
+        blendPalette(FALL, FALL_N, pos, r, g, b);
+        uint8_t lvl = 255;
+        if (sg->speed > 0) {  // like leaves catching the light: 170..255, each at its own pace
+          uint8_t s = sin8((uint8_t)(p * (2 + (hash8(i, 5) & 3)) / 2 + hash8(i, 6)));
+          lvl = 170 + scale8(s, 85);
+        }
+        px(i, scale8(r, lvl), scale8(g, lvl), scale8(b, lvl));
+      }
+      break;
+    }
+
+    case 19: blocks(1, false, 0); break;  // Solid 1 Color: the whole strip in color 1
+    case 20: blocks(2, false, 0); break;  // Solid 2 Colors: blocks of colors 1, 2
+    case 21: blocks(3, false, 0); break;  // Solid 3 Colors: blocks of colors 1, 2, 3
+
+    // Chases: the same blocks moving along the strip (speed 128 ~ 11 LEDs/s; 0 holds still).
+    // With one color, dark gaps between the blocks make the movement visible.
+    case 22: blocks(1, true, sg->speed ? p / 3 : 0); break;
+    case 23: blocks(2, false, sg->speed ? p / 3 : 0); break;
+    case 24: blocks(3, false, sg->speed ? p / 3 : 0); break;
+
+    case 25: {  // Bounce-In: a chase runs in from both ends, meets in the middle and runs back out
+      // Each trip in and out uses the next of colors 1-3; colors set to black are skipped.
+      const uint8_t c1[3] = {sg->r, sg->g, sg->b};
+      const uint8_t *all[3] = {c1, sg->c2, sg->c3};
+      const uint8_t *cols[3];
+      uint8_t cnt = 0;
+      for (const uint8_t *c : all)
+        if (c[0] | c[1] | c[2]) cols[cnt++] = c;
+      if (!cnt) cols[cnt++] = c1;
+      fadeAll(190);  // trail
+      const uint16_t half = (n + 1) / 2;
+      const uint32_t trip = 2u * half;             // LED steps for one trip in and back out
+      const uint32_t t = (uint32_t)p * n / 64;     // speed 128 ~ one trip per 2 s
+      const uint32_t q = t % trip;
+      const uint16_t head = q < half ? q : trip - 1 - q;  // 0 = at the ends, half-1 = middle
+      const uint8_t *c = cols[(t / trip) % cnt];
+      uint16_t i = rt->lastHead < half ? rt->lastHead : head;
+      for (uint16_t guard = 0; guard <= half; guard++) {  // fill skipped LEDs at high speed
+        px(i, c[0], c[1], c[2]);
+        px(n - 1 - i, c[0], c[1], c[2]);
+        if (i == head) break;
+        i = i < head ? i + 1 : i - 1;
+      }
+      rt->lastHead = head;
       break;
     }
   }

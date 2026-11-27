@@ -123,6 +123,13 @@ static void colorToJson(JsonObject o, const Seg &s) {
   c.add(s.g);
   c.add(s.b);
   o["hex"] = hex;
+  // colors 1-3 ("color"/"hex" above = color 1)
+  JsonArray cs = o["colors"].to<JsonArray>();
+  cs.add(hex);
+  for (const uint8_t *c : {s.c2, s.c3}) {
+    snprintf(hex, sizeof(hex), "#%02x%02x%02x", c[0], c[1], c[2]);
+    cs.add(hex);
+  }
   o["effect"] = s.effect;
   o["effectName"] = EFFECT_NAMES[s.effect];
   o["speed"] = s.speed;
@@ -142,12 +149,16 @@ static void stateToJson(JsonObject o) {
     if (!outputUsed(k)) continue;
     const Seg &s = state.seg[k];
     // same look: same effect, and the same color/speed where the effect uses them
-    bool sameColor = s.r == a.r && s.g == a.g && s.b == a.b;
-    if (s.effect != a.effect || (effectUsesColor(s.effect) && !sameColor) || (s.effect != 0 && s.speed != a.speed))
+    const uint8_t nc = effectColors(s.effect);
+    bool sameColor = s.r == a.r && s.g == a.g && s.b == a.b && (nc < 2 || !memcmp(s.c2, a.c2, 3)) &&
+                     (nc < 3 || !memcmp(s.c3, a.c3, 3));
+    if (s.effect != a.effect || (nc && !sameColor) || (s.effect != 0 && s.speed != a.speed))
       synced = false;
     JsonObject j = segs.add<JsonObject>();
     j["id"] = k;
     j["name"] = outputName(k);
+    j["model"] = cfg.out[k].model;
+    j["active"] = cfg.out[k].active;  // false = hidden on the web UI's control card
     j["on"] = s.on;
     j["bri"] = s.bri;
     colorToJson(j, s);
@@ -178,6 +189,21 @@ static String parseOn(JsonVariantConst on, bool &val) {
 }
 
 // Reads color / r / g / b / effect / speed into s (and on / bri when withOnBri).
+// One color: [r,g,b] or "#rrggbb".
+static bool parseColor(JsonVariantConst col, uint8_t &r, uint8_t &g, uint8_t &b) {
+  if (col.is<JsonArrayConst>()) {
+    if (col.size() < 3) return false;
+    long c[3];
+    for (int i = 0; i < 3; i++)
+      if (!getInt(col[i], c[i]) || c[i] < 0 || c[i] > 255) return false;
+    r = c[0];
+    g = c[1];
+    b = c[2];
+    return true;
+  }
+  return parseHex(col.as<String>(), r, g, b);
+}
+
 static String parseSeg(JsonObjectConst o, Seg &s, bool withOnBri) {
   long v;
   if (withOnBri) {
@@ -189,16 +215,16 @@ static String parseSeg(JsonObjectConst o, Seg &s, bool withOnBri) {
     }
   }
   JsonVariantConst col = o["color"];
-  if (!col.isNull()) {
-    if (col.is<JsonArrayConst>() && col.size() >= 3) {
-      long c[3];
-      for (int i = 0; i < 3; i++)
-        if (!getInt(col[i], c[i]) || c[i] < 0 || c[i] > 255) return "color values must be 0-255";
-      s.r = c[0];
-      s.g = c[1];
-      s.b = c[2];
-    } else if (!parseHex(col.as<String>(), s.r, s.g, s.b)) {
-      return "color must be [r,g,b] or \"#rrggbb\"";
+  if (!col.isNull() && !parseColor(col, s.r, s.g, s.b)) return "color must be [r,g,b] (0-255) or \"#rrggbb\"";
+  // colors: [color1, color2, color3], each [r,g,b] / "#rrggbb" / null (unchanged); may be shorter
+  JsonVariantConst cols = o["colors"];
+  if (!cols.isNull()) {
+    if (!cols.is<JsonArrayConst>() || cols.size() > 3) return "colors must be an array of up to 3 colors";
+    uint8_t *dst[3][3] = {{&s.r, &s.g, &s.b}, {&s.c2[0], &s.c2[1], &s.c2[2]}, {&s.c3[0], &s.c3[1], &s.c3[2]}};
+    for (uint8_t i = 0; i < cols.size(); i++) {
+      if (cols[i].isNull()) continue;
+      if (!parseColor(cols[i], *dst[i][0], *dst[i][1], *dst[i][2]))
+        return "colors[" + String(i) + "] must be [r,g,b] (0-255) or \"#rrggbb\"";
     }
   }
   const char *ch[3] = {"r", "g", "b"};
@@ -306,6 +332,7 @@ static void handleIcon() {
   size_t n = 0;
   if (u == "/icon/string.webp") p = ICON_STRING, n = sizeof(ICON_STRING);
   else if (u == "/icon/snowflake91.webp") p = ICON_SNOWFLAKE, n = sizeof(ICON_SNOWFLAKE);
+  else if (u == "/icon/arches4x24.webp") p = ICON_ARCHES, n = sizeof(ICON_ARCHES);
   if (!p) return server.send(404, "text/plain", "not found");
   server.sendHeader("Cache-Control", "max-age=604800");
   server.send_P(200, "image/webp", (PGM_P)p, n);
@@ -323,7 +350,7 @@ static void handleInfo() {
   d["api"] = API_VERSION;
   d["auth"] = cfg.apiToken.length() > 0;
   d["wsPort"] = WS_PORT;
-  d["fixture"] = cfg.fixture;  // fixture model, so apps can pick an icon
+  d["fixture"] = fixtureModel();  // model of the first output, so apps can pick an icon
   d["board"] = BOARD_ID;       // hardware: "esp12" or "wt32-eth01" (picks the right firmware file)
   if (!authed()) return sendJson(200, d);
 
@@ -390,6 +417,8 @@ static void handleInfo() {
     j["pin"] = cfg.out[k].pin;
     j["count"] = cfg.out[k].count;
     j["colorOrder"] = cfg.out[k].order;
+    j["model"] = cfg.out[k].model;
+    j["active"] = cfg.out[k].active;  // false = hidden on the web UI's control card
   }
   l["estimatedMa"] = ledsEstimatedMa();
   l["maxMa"] = cfg.maxMa;
@@ -440,6 +469,7 @@ static void handleEffects() {
     JsonObject e = a.add<JsonObject>();
     e["id"] = i;
     e["name"] = EFFECT_NAMES[i];
+    e["colors"] = effectColors(i);  // how many of colors 1-3 it uses (0 = its own palette)
   }
   sendJson(200, d);
 }
@@ -481,10 +511,12 @@ static void handleConfigGet() {
     j["count"] = cfg.out[k].count;
     j["order"] = cfg.out[k].order;
     j["name"] = cfg.out[k].name;
+    j["model"] = cfg.out[k].model;
+    j["active"] = cfg.out[k].active;  // false = hidden on the web UI's control card
   }
   d["irPin"] = cfg.irPin;
   d["maxMa"] = cfg.maxMa;
-  d["fixture"] = cfg.fixture;
+  d["fixture"] = fixtureModel();
   d["setupSsid"] = setupApSsid();
   d["apiToken"] = cfg.apiToken;  // caller is already authenticated (or auth is off)
   sendJson(200, d);
@@ -531,8 +563,23 @@ static void handleConfigPost() {
       if (s.length() > 24) return "output names can be at most 24 characters";
       o.name = s;
     }
+    if (!j["active"].isNull()) {
+      if (!j["active"].is<bool>()) return "active must be true or false";
+      o.active = j["active"].as<bool>();
+    }
+    if (!j["model"].isNull()) {
+      String m = j["model"].as<String>();
+      if (!validModel(m)) return "model must be custom, string, snowflake91 or arches4x24";
+      o.model = m;
+    }
     return "";
   };
+  // "fixture" = output 1's model (from before each output had its own); outputs[0].model wins
+  if (!d["fixture"].isNull()) {
+    String f = d["fixture"].as<String>();
+    if (!validModel(f)) return sendErr(400, "fixture must be custom, string, snowflake91 or arches4x24");
+    c.out[0].model = f;
+  }
   JsonVariantConst outs = d["outputs"];
   if (!outs.isNull()) {
     if (!outs.is<JsonArrayConst>() || outs.size() > MAX_OUTPUTS)
@@ -559,12 +606,8 @@ static void handleConfigPost() {
       return sendErr(400, "maxMa must be 0 (no limit) or 100-20000");
     c.maxMa = v;
   }
-  if (!d["fixture"].isNull()) {
-    String f = d["fixture"].as<String>();
-    if (!validFixture(f)) return sendErr(400, "fixture must be custom, string or snowflake91");
-    c.fixture = f;
-  }
-  if (c.fixture == "snowflake91") c.out[0].count = 91;  // fixed pixel count for this model
+  for (uint8_t k = 0; k < MAX_OUTPUTS; k++)  // some models have a fixed pixel count
+    if (uint16_t n = modelFixedCount(c.out[k].model)) c.out[k].count = n;
   {
     uint16_t total = 0;
     bool any = false;
@@ -835,6 +878,7 @@ void webBegin() {
 
   server.on("/icon/string.webp", HTTP_GET, handleIcon);
   server.on("/icon/snowflake91.webp", HTTP_GET, handleIcon);
+  server.on("/icon/arches4x24.webp", HTTP_GET, handleIcon);
   server.on("/api/info", HTTP_GET, handleInfo);  // public identity block; full details need auth
   server.on("/api/state", HTTP_GET, guarded<sendState>);
   server.on("/api/state", HTTP_POST, guarded<handleStatePost>);

@@ -3,7 +3,8 @@
 
 extern const char *const EFFECT_NAMES[];
 extern const uint8_t EFFECT_COUNT;
-bool effectUsesColor(uint8_t e);      // false for effects with their own palette (Rainbow, Christmas, ...)
+uint8_t effectColors(uint8_t e);      // how many of the output's colors (1-3) an effect uses; 0 = own palette
+inline bool effectUsesColor(uint8_t e) { return effectColors(e) > 0; }
 
 void ledsBegin();                      // one driver per used output in cfg.out[]
 void ledsLoop();

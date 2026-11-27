@@ -4,7 +4,7 @@
 #include "platform.h"
 
 #define FW_NAME "LoGiX Fixture"
-#define FW_VERSION "1.8.0"
+#define FW_VERSION "1.11.0"
 #define FW_MODEL "logixfixture"  // board identifier for apps (mDNS TXT "model"), LoGiX naming scheme
 #define FW_MANUFACTURER "Logix"
 #define API_VERSION 1            // bump on breaking API changes (mDNS TXT "api")
@@ -19,6 +19,8 @@ struct Output {
   uint16_t count = DEFAULT_LED_COUNT;
   String order = "GRB";                   // WS2812B = GRB
   String name;                            // shown in the UI; empty = "Output N"
+  String model = "custom";                // fixture model on this output (UI icon + fixed LED count)
+  bool active = true;                     // listed on the web UI's control card (false = hidden there)
 };
 
 // Persistent device settings (/config.json on LittleFS).
@@ -31,7 +33,6 @@ struct Config {
   int8_t irPin = DEFAULT_IR_PIN;          // IR receiver GPIO; -1 = disabled
   uint16_t maxMa = DEFAULT_MAX_MA;        // total current budget in mA; 0 = no limit
   String apiToken;           // empty = API open; otherwise required on every API call
-  String fixture = "custom"; // fixture model: custom, string, snowflake91 (UI icon + LED-count preset)
   Config() {
     for (uint8_t k = 0; k < MAX_OUTPUTS; k++) out[k].pin = DEFAULT_OUT_PINS[k];
   }
@@ -41,7 +42,9 @@ struct Config {
 struct Seg {
   bool on = true;
   uint8_t bri = 255;                 // scaled by the master brightness
-  uint8_t r = 255, g = 147, b = 41;  // warm white
+  uint8_t r = 255, g = 147, b = 41;  // color 1: warm white
+  uint8_t c2[3] = {255, 0, 0};       // color 2: red
+  uint8_t c3[3] = {0, 64, 255};      // color 3: blue
   uint8_t effect = 0;
   uint8_t speed = 128;
 };
@@ -82,4 +85,6 @@ String outputName(uint8_t k);
 bool validLedPin(int pin);
 bool validIrPin(int pin);
 bool validColorOrder(const String &o);
-bool validFixture(const String &f);
+bool validModel(const String &m);       // custom, string, snowflake91, arches4x24
+uint16_t modelFixedCount(const String &m);  // LEDs a model always has; 0 = any count
+String fixtureModel();       // model of the first used output (the device's "fixture" in the API)

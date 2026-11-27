@@ -52,13 +52,20 @@ a{color:var(--ac)}
 code{background:#10131a;padding:1px 5px;border-radius:5px;font-size:12.5px}
 .ttl{display:flex;align-items:center;gap:10px;min-width:0}
 #hicon{flex:none;height:34px;max-width:96px;object-fit:contain}
-#micon{display:block;max-height:110px;max-width:100%;margin:4px auto 2px}
+img.micon{display:block;max-height:110px;max-width:100%;margin:4px auto 2px}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 14px}
 .chips button{display:flex;align-items:center;gap:7px;background:var(--line);color:var(--tx);padding:6px 12px;border-radius:99px;font-weight:500;font-size:13px}
 .chips button.act{background:var(--ac);color:#fff}
 .chips button.off{color:var(--mu)}
 .chips i{width:11px;height:11px;border-radius:50%;flex:none;border:1px solid #ffffff40}
 .chips button.off i{opacity:.25}
+.cols{display:flex;gap:8px}
+.row>input[type=checkbox]{flex:none;width:20px;height:20px;margin:0;accent-color:var(--ac)}
+[hidden]{display:none!important}
+#cicon{max-height:44px;max-width:150px;object-fit:contain}
+.cols input{transition:opacity .2s}
+.cols input.sel{outline:2px solid var(--ac);outline-offset:2px}
+.cols input.dim{opacity:.35}
 h2.out{margin:18px 0 0;padding-top:12px;border-top:1px solid var(--line)}
 </style></head><body><main>
 <header><span class="ttl"><img id="hicon" alt="" hidden><h1 id="title">LoGiX Fixture</h1></span><span class="pills"><a id="upd" class="pill upd" href="#" hidden></a><span id="pill" class="pill">…</span></span></header>
@@ -70,7 +77,9 @@ h2.out{margin:18px 0 0;padding-top:12px;border-top:1px solid var(--line)}
     <button id="pw" class="power" title="Power" aria-label="Power">&#x23FB;</button>
     <div class="grow"><div class="hint">Brightness <span id="briv"></span></div><input id="bri" type="range" min="1" max="255"></div>
   </div>
-  <div class="row"><label>Color</label><input id="col" type="color"><div class="sw grow" id="sw"></div></div>
+  <div class="row"><label>Colors</label><div class="cols"><input id="col0" type="color" title="Color 1"><input id="col1" type="color" title="Color 2"><input id="col2" type="color" title="Color 3"></div></div>
+  <div class="row"><label></label><div class="sw grow" id="sw"></div></div>
+  <div class="row" id="cimg" hidden><label></label><img id="cicon" alt=""></div>
   <div class="row"><label>Effect</label><select id="fx"></select></div>
   <div class="row"><label>Speed</label><input id="spd" type="range" min="0" max="255"></div>
   <div class="hint" id="synch" hidden>The outputs are showing different things. Changes made under "All" apply to every output.</div>
@@ -107,9 +116,6 @@ h2.out{margin:18px 0 0;padding-top:12px;border-top:1px solid var(--line)}
   </div>
 
   <div class="tab" id="t-hw">
-    <div class="row"><label>Model</label><select id="model"></select></div>
-    <img id="micon" alt="" hidden>
-    <div class="hint" id="mhint" hidden></div>
     <div id="outs"></div>
     <div class="row"><label>IR receiver GPIO</label><select id="irpin"></select></div>
     <div class="row"><label>Power limit (mA)</label><input id="maxma" type="number" min="0" max="20000" step="50"></div>
@@ -142,7 +148,7 @@ let S={},I={},C={},pending={},timer=null,lastSend=0;
 const SW=['#ff0000','#ff6a00','#ffc400','#00ff40','#00d0ff','#0040ff','#a000ff','#ff00a0','#ffffff','#ff9329'];
 const LEDP=[[2,'GPIO2 – LED headers (board default)'],[4,'GPIO4 – IR receiver on this board'],[5,'GPIO5'],[12,'GPIO12'],[13,'GPIO13'],[14,'GPIO14'],[0,'GPIO0 – must be HIGH at boot'],[15,'GPIO15 – must be LOW at boot'],[3,'GPIO3/RX – disables serial'],[1,'GPIO1/TX – disables serial']];
 // Fixture models: id, label, preset LED count (0 = keep whatever is set), icon.
-const MODELS=[['custom','Custom / other',0,''],['string','String Lights',0,'/icon/string.webp'],['snowflake91','91 Pixel Snowflake',91,'/icon/snowflake91.webp']];
+const MODELS=[['custom','Custom / other',0,''],['string','String Lights',0,'/icon/string.webp'],['snowflake91','91 Pixel Snowflake',91,'/icon/snowflake91.webp'],['arches4x24','4 Arches (24 px each)',96,'/icon/arches4x24.webp']];
 const model=id=>MODELS.find(m=>m[0]===id)||MODELS[0];
 function showIcon(el,id){const m=model(id);el.hidden=!m[3];if(m[3])el.src=m[3];else el.removeAttribute('src')}
 // WT32-ETH01: Ethernet owns GPIO0/16/18/19/21/22/23/25/26/27; 35/36/39 are input-only (IR only).
@@ -171,39 +177,57 @@ const host=n=>{let h=n.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$
 // or an output id (that output's own power/brightness/color/effect/speed).
 let T='all';
 const seg=id=>(S.segments||[]).find(g=>g.id===id);
+// o.colors = [c1,c2,c3] with null for "unchanged"; merged slot by slot.
+const mergeCols=(a,b)=>[0,1,2].map(i=>b[i]!=null?b[i]:(a&&a[i]!=null?a[i]:null));
+function assignSeg(t,o){const{colors,...rest}=o;Object.assign(t,rest);
+  if(colors){t.colors=mergeCols(t.colors,colors);if(colors[0])t.hex=colors[0]}}
 function send(o){
-  if(T==='all'){Object.assign(pending,o);Object.assign(S,o);
-    (S.segments||[]).forEach(g=>{if('color'in o)g.hex=o.color;if('effect'in o)g.effect=o.effect;if('speed'in o)g.speed=o.speed})}
-  else{const l=pending.segments=pending.segments||[];let p=l.find(x=>x.id===T);if(!p)l.push(p={id:T});Object.assign(p,o);
-    const g=seg(T);if(g){Object.assign(g,o);if(o.color)g.hex=o.color}if(o.on)S.on=true}
+  if(T==='all'){const{colors,...rest}=o;Object.assign(pending,rest);if(colors)pending.colors=mergeCols(pending.colors,colors);
+    assignSeg(S,o);(S.segments||[]).forEach(g=>{const{on,bri,...look}=o;assignSeg(g,look)})}
+  else{const l=pending.segments=pending.segments||[];let p=l.find(x=>x.id===T);if(!p)l.push(p={id:T});
+    const{colors,...rest}=o;Object.assign(p,rest);if(colors)p.colors=mergeCols(p.colors,colors);
+    const g=seg(T);if(g)assignSeg(g,o);if(o.on)S.on=true}
   paint(true);if(timer)return;
   const wait=Math.max(0,120-(Date.now()-lastSend));
   timer=setTimeout(async()=>{const b=pending;pending={};timer=null;lastSend=Date.now();
     try{S=await post('/api/state',b);paint()}catch(e){}},wait)}
+// FXC[effect] = how many of colors 1-3 it uses (0 = its own palette)
+let FXC=[],CSEL=0;
+const ncol=v=>FXC[v.effect]!=null?FXC[v.effect]:(v.effect?0:1);
+function dot(g){const n=ncol(g),c=g.colors||[g.hex];
+  return !n?'conic-gradient(#f44,#fc4,#4f8,#4cf,#a4f,#f44)':n<2?g.hex:`linear-gradient(90deg,${c.slice(0,n).join(',')})`}
+const shown=()=>(S.segments||[]).filter(g=>g.active!==false);
 function paint(local){
-  const multi=!!(S.segments&&S.segments.length>1);
-  if(T!=='all'&&!seg(T))T='all';
+  const vis=shown(),multi=vis.length>1;
+  if(T!=='all'&&!vis.some(g=>g.id===T))T='all';
   const c=$('chips');c.hidden=!multi;
-  if(multi)c.innerHTML=`<button data-s="all" class="${T==='all'?'act':''}">All</button>`+S.segments.map(g=>
-    `<button data-s="${g.id}" class="${T===g.id?'act':''}${g.on&&S.on?'':' off'}"><i style="background:${g.effect?'conic-gradient(#f44,#fc4,#4f8,#4cf,#a4f,#f44)':g.hex}"></i>${esc(g.name)}</button>`).join('');
+  if(multi)c.innerHTML=`<button data-s="all" class="${T==='all'?'act':''}">All</button>`+vis.map(g=>
+    `<button data-s="${g.id}" class="${T===g.id?'act':''}${g.on&&S.on?'':' off'}"><i style="background:${dot(g)}"></i>${esc(g.name)}</button>`).join('');
   const v=T==='all'?S:seg(T);
   $('pw').classList.toggle('on',!!v.on&&!!S.on);
   const a=document.activeElement;
   if(a!==$('bri'))$('bri').value=v.bri;
   $('briv').textContent=Math.round(v.bri/2.55)+'%';
-  if(!local&&v.hex&&a!==$('col'))$('col').value=v.hex;
+  const cs=v.colors||[v.hex],n=ncol(v);
+  for(let i=0;i<3;i++){const e=$('col'+i);if(!local&&cs[i]&&a!==e)e.value=cs[i];e.classList.toggle('dim',i>=n);e.classList.toggle('sel',i===CSEL)}
   if(a!==$('fx'))$('fx').value=v.effect;
   if(a!==$('spd'))$('spd').value=v.speed;
+  // icon of the selected output's model; under "All" only when every output is the same model
+  const ms=[...new Set(T==='all'?vis.map(g=>g.model):[v.model])],mi=ms.length===1?model(ms[0])[3]:'';
+  $('cimg').hidden=!mi;if(mi&&$('cicon').getAttribute('src')!==mi)$('cicon').src=mi;
   $('synch').hidden=!(multi&&T==='all'&&S.synced===false);
 }
 $('chips').onclick=e=>{const b=e.target.closest('button');if(!b)return;T=b.dataset.s==='all'?'all':+b.dataset.s;paint()};
 $('pw').onclick=()=>{const v=T==='all'?S:seg(T);send({on:!(v.on&&S.on)})};
 $('bri').oninput=e=>send({on:true,bri:+e.target.value});
-$('col').oninput=e=>send({on:true,color:e.target.value});
+// a swatch sets the selected color slot (click a color box to select it)
+function setCol(i,hex,solid){const c=[null,null,null];c[i]=hex;const o={on:true,colors:c};
+  const v=T==='all'?S:seg(T);if(solid&&!ncol(v))o.effect=0;send(o)}
+for(let i=0;i<3;i++){const e=$('col'+i);e.oninput=()=>setCol(i,e.value);e.onclick=()=>{CSEL=i;paint(true)}}
 $('fx').onchange=e=>send({on:true,effect:+e.target.value});
 $('spd').oninput=e=>send({speed:+e.target.value});
 $('sw').innerHTML=SW.map(c=>`<b style="background:${c}" data-c="${c}"></b>`).join('');
-$('sw').onclick=e=>{const c=e.target.dataset.c;if(c){$('col').value=c;send({on:true,color:c,effect:0})}};
+$('sw').onclick=e=>{const c=e.target.dataset.c;if(c){$('col'+CSEL).value=c;setCol(CSEL,c,true)}};
 
 // ---- tabs
 function tab(t){document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('act',b.dataset.t===t));
@@ -299,21 +323,25 @@ $('dsave').onclick=async()=>{const body={name:$('name').value.trim()};if($('appa
 
 // ---- hardware
 opts($('irpin'),IRP);
-// One editor per output; with several outputs each gets a name and can be left unused.
+// One editor per output, each with its own model; with several outputs each also gets a name
+// and can be left unused.
 function outRows(n){const LP=ETH()?LEDP32:LEDP,ORD=['GRB','RGB','BRG','RBG','GBR','BGR'];
-  $('outs').innerHTML=Array.from({length:n},(_,k)=>(n>1?`<h2 class="out">Output ${k+1}</h2><div class="row"><label>Name</label><input id="oname${k}" type="text" maxlength="24" placeholder="Output ${k+1}"></div>`:'')+
-    `<div class="row"><label>LED data GPIO</label><select id="opin${k}"></select></div>
+  $('outs').innerHTML=Array.from({length:n},(_,k)=>(n>1?`<h2 class="out">Output ${k+1}</h2><div class="row"><label for="oact${k}">Active</label><input id="oact${k}" type="checkbox"><span class="hint">Show on the main card</span></div><div class="row"><label>Name</label><input id="oname${k}" type="text" maxlength="24" placeholder="Output ${k+1}"></div>`:'')+
+    `<div class="row"><label>Model</label><select id="omod${k}"></select></div>
+    <img id="oicon${k}" class="micon" alt="" hidden>
+    <div class="hint" id="ohint${k}" hidden></div>
+    <div class="row"><label>LED data GPIO</label><select id="opin${k}"></select></div>
     <div class="row"><label>LED count</label><input id="ocnt${k}" type="number" min="1" max="800"></div>
     <div class="row"><label>Color order</label><select id="oord${k}">${ORD.map(o=>`<option>${o}</option>`).join('')}</select></div>`).join('');
-  for(let k=0;k<n;k++)opts($('opin'+k),n>1?[[-1,'Not used'],...LP]:LP)}
-outRows(1);opts($('model'),MODELS.map(m=>[m[0],m[1]]));
-function modelUI(){const m=model($('model').value);showIcon($('micon'),m[0]);
-  $('ocnt0').readOnly=!!m[2];if(m[2])$('ocnt0').value=m[2];
-  $('mhint').hidden=!m[2];$('mhint').textContent=m[2]?`${m[1]}: LED count is fixed at ${m[2]}.`:''}
-$('model').onchange=modelUI;
+  for(let k=0;k<n;k++){opts($('opin'+k),n>1?[[-1,'Not used'],...LP]:LP);
+    opts($('omod'+k),MODELS.map(m=>[m[0],m[1]]));$('omod'+k).onchange=()=>modelUI(k)}}
+outRows(1);
+function modelUI(k){const m=model($('omod'+k).value);showIcon($('oicon'+k),m[0]);
+  $('ocnt'+k).readOnly=!!m[2];if(m[2])$('ocnt'+k).value=m[2];
+  $('ohint'+k).hidden=!m[2];$('ohint'+k).textContent=m[2]?`${m[1]}: LED count is fixed at ${m[2]}.`:''}
 $('hsave').onclick=async()=>{const outputs=[];
-  for(let k=0;$('opin'+k);k++){const o={pin:+$('opin'+k).value,count:+$('ocnt'+k).value,order:$('oord'+k).value};if($('oname'+k))o.name=$('oname'+k).value.trim();outputs.push(o)}
-  const body={fixture:$('model').value,outputs,irPin:+$('irpin').value,maxMa:+$('maxma').value};
+  for(let k=0;$('opin'+k);k++){const o={pin:+$('opin'+k).value,count:+$('ocnt'+k).value,order:$('oord'+k).value,model:$('omod'+k).value};if($('oname'+k))o.name=$('oname'+k).value.trim();if($('oact'+k))o.active=$('oact'+k).checked;outputs.push(o)}
+  const body={outputs,irPin:+$('irpin').value,maxMa:+$('maxma').value};
   try{const r=await post('/api/config',body);msg('hmsg',r.reboot?'Saved. Rebooting…':'Saved.','ok');if(r.reboot)setTimeout(()=>location.reload(),8000)}catch(e){msg('hmsg',e.message,'bad')}};
 
 // ---- firmware
@@ -339,13 +367,14 @@ $('reset').onclick=async()=>{if(!confirm('Erase all settings (Wi‑Fi, name, GPI
   if(ETH()){opts($('irpin'),IRP32);
     $('mahint').textContent='Power limit is the total current budget for the board plus LEDs (0 = no limit). Set it to what your LED power supply can deliver.';
     $('fwhint').innerHTML='Use a <code>-eth01.bin</code> release file or <code>.pio/build/eth01/firmware.bin</code> from a PlatformIO build. Settings are kept.'}
-  try{const fx=await api('/api/effects');$('fx').innerHTML=fx.map(e=>`<option value="${e.id}">${e.name}</option>`).join('')}catch(e){}
+  try{const fx=await api('/api/effects');$('fx').innerHTML=fx.map(e=>`<option value="${e.id}">${e.name}</option>`).join('');
+    fx.forEach(e=>FXC[e.id]=e.colors)}catch(e){}
   try{C=await api('/api/config');$('name').value=C.name;$('name').oninput();$('ssid').value=C.ssid;
     outRows(C.maxOutputs||1);
-    (C.outputs||[{pin:C.ledPin,count:C.ledCount,order:C.colorOrder}]).forEach((o,k)=>{if(!$('opin'+k))return;
-      $('opin'+k).value=o.pin;$('ocnt'+k).value=o.count;$('oord'+k).value=o.order;if($('oname'+k))$('oname'+k).value=o.name||''});
+    (C.outputs||[{pin:C.ledPin,count:C.ledCount,order:C.colorOrder,model:C.fixture}]).forEach((o,k)=>{if(!$('opin'+k))return;
+      $('opin'+k).value=o.pin;$('ocnt'+k).value=o.count;$('oord'+k).value=o.order;if($('oname'+k))$('oname'+k).value=o.name||'';if($('oact'+k))$('oact'+k).checked=o.active!==false;
+      $('omod'+k).value=model(o.model||(k?'custom':C.fixture))[0];modelUI(k)});
     $('irpin').value=C.irPin;$('maxma').value=C.maxMa;
-    $('model').value=C.fixture||'custom';modelUI();
     if(C.hasApPass)$('appass').placeholder='(unchanged)';}catch(e){}
   await refresh();
   showTok(C.apiToken||'');

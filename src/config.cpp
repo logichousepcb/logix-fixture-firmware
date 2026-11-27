@@ -112,7 +112,17 @@ bool validColorOrder(const String &o) {
   return o == "RGB" || o == "RBG" || o == "GRB" || o == "GBR" || o == "BRG" || o == "BGR";
 }
 
-bool validFixture(const String &f) { return f == "custom" || f == "string" || f == "snowflake91"; }
+bool validModel(const String &m) {
+  return m == "custom" || m == "string" || m == "snowflake91" || m == "arches4x24";
+}
+
+uint16_t modelFixedCount(const String &m) {
+  if (m == "snowflake91") return 91;
+  if (m == "arches4x24") return 96;  // 4 arches x 24 pixels
+  return 0;
+}
+
+String fixtureModel() { return cfg.out[firstOutput()].model; }
 
 static void loadConfig() {
   cfg = Config();
@@ -144,6 +154,8 @@ static void loadConfig() {
       if (j["count"].is<int>()) o.count = constrain(j["count"].as<int>(), 1, MAX_LEDS);
       if (j["order"].is<const char *>() && validColorOrder(j["order"].as<String>())) o.order = j["order"].as<const char *>();
       if (j["name"].is<const char *>()) o.name = j["name"].as<const char *>();
+      if (j["model"].is<const char *>() && validModel(j["model"].as<String>())) o.model = j["model"].as<const char *>();
+      o.active = j["active"] | true;
     }
   } else {  // config from before multiple outputs: one strip
     for (uint8_t k = 1; k < MAX_OUTPUTS; k++) cfg.out[k].pin = -1;
@@ -156,8 +168,12 @@ static void loadConfig() {
   if (d["irPin"].is<int>() && validIrPin(d["irPin"])) cfg.irPin = d["irPin"];
   if (d["maxMa"].is<int>()) cfg.maxMa = d["maxMa"];
   if (d["apiToken"].is<const char *>()) cfg.apiToken = d["apiToken"].as<const char *>();
-  if (d["fixture"].is<const char *>() && validFixture(d["fixture"].as<String>()))
-    cfg.fixture = d["fixture"].as<const char *>();
+  // before per-output models (1.9.0) there was one device-wide model; it belonged to output 1
+  if (!outs[0]["model"].is<const char *>() && d["fixture"].is<const char *>() &&
+      validModel(d["fixture"].as<String>()))
+    cfg.out[0].model = d["fixture"].as<const char *>();
+  for (uint8_t k = 0; k < MAX_OUTPUTS; k++)
+    if (uint16_t n = modelFixedCount(cfg.out[k].model)) cfg.out[k].count = n;
   // Drop outputs that clash with an earlier one or don't fit in MAX_LEDS; IR loses to LEDs.
   uint16_t total = 0;
   for (uint8_t k = 0; k < MAX_OUTPUTS; k++) {
@@ -183,6 +199,8 @@ bool configSave() {
     o["count"] = cfg.out[k].count;
     o["order"] = cfg.out[k].order;
     o["name"] = cfg.out[k].name;
+    o["model"] = cfg.out[k].model;
+    o["active"] = cfg.out[k].active;
   }
   // first output also in the old single-strip fields, so older firmware still reads it
   d["ledPin"] = cfg.out[0].pin >= 0 ? cfg.out[0].pin : DEFAULT_OUT_PINS[0];
@@ -191,7 +209,7 @@ bool configSave() {
   d["irPin"] = cfg.irPin;
   d["maxMa"] = cfg.maxMa;
   d["apiToken"] = cfg.apiToken;
-  d["fixture"] = cfg.fixture;
+  d["fixture"] = fixtureModel();  // read by firmware before 1.9.0
   File f = LittleFS.open(CFG_PATH, "w");
   if (!f) return false;
   serializeJson(d, f);
@@ -222,6 +240,10 @@ static void loadState() {
     s.r = j["r"] | s.r;
     s.g = j["g"] | s.g;
     s.b = j["b"] | s.b;
+    for (uint8_t i = 0; i < 3; i++) {
+      s.c2[i] = j["c2"][i] | s.c2[i];
+      s.c3[i] = j["c3"][i] | s.c3[i];
+    }
     s.effect = j["effect"] | s.effect;
     if (s.effect >= EFFECT_COUNT) s.effect = 0;
     s.speed = j["speed"] | s.speed;
@@ -241,6 +263,11 @@ void stateSaveNow() {
     j["r"] = s.r;
     j["g"] = s.g;
     j["b"] = s.b;
+    JsonArray c2 = j["c2"].to<JsonArray>(), c3 = j["c3"].to<JsonArray>();
+    for (uint8_t i = 0; i < 3; i++) {
+      c2.add(s.c2[i]);
+      c3.add(s.c3[i]);
+    }
     j["effect"] = s.effect;
     j["speed"] = s.speed;
   }
