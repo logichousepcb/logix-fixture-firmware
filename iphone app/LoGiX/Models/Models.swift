@@ -152,6 +152,7 @@ struct FixtureModel: Identifiable, Hashable {
         FixtureModel(id: "string", name: "String Lights", fixedCount: 0, hasIcon: true),
         FixtureModel(id: "snowflake91", name: "91 Pixel Snowflake", fixedCount: 91, hasIcon: true),
         FixtureModel(id: "arches4x24", name: "4 Arches (24 px each)", fixedCount: 96, hasIcon: true),
+        FixtureModel(id: "tree81", name: "81 Pixel Light Tree", fixedCount: 81, hasIcon: true),
     ]
 
     static func named(_ id: String?) -> FixtureModel {
